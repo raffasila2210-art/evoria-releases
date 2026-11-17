@@ -1,0 +1,202 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "EVORIA user profile and linked partner summary.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the owner." },
+        "displayName": { "type": "string", "description": "Display name shown to partner." },
+        "partnerNickname": { "type": "string", "description": "Affectionate nickname for partner." },
+        "avatarUrl": { "type": "string", "description": "Optional profile photo URL." },
+        "coupleId": { "type": "string", "description": "Active CoupleConnection ID when linked." },
+        "partnerUid": { "type": "string", "description": "Linked partner UID when connected." },
+        "partnerDisplayName": { "type": "string", "description": "Linked partner display name." },
+        "aiSearchConsent": { "type": "boolean", "description": "Explicit user consent for AI photo search." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["userId", "displayName", "aiSearchConsent", "createdAt", "updatedAt"]
+    },
+    "Invitation": {
+      "title": "Invitation",
+      "description": "Single-use 24h hashed partner invitation code.",
+      "type": "object",
+      "properties": {
+        "codeHash": { "type": "string", "description": "SHA-256 hex hash of the 6-character invitation code." },
+        "inviterUid": { "type": "string", "description": "UID of the user who generated the invitation." },
+        "inviterName": { "type": "string", "description": "Display name of the inviter." },
+        "recipientUid": { "type": "string", "description": "UID of the partner who accepted or declined." },
+        "recipientName": { "type": "string", "description": "Display name of the recipient." },
+        "coupleId": { "type": "string", "description": "Created couple document ID when accepted." },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined", "canceled", "expired"], "description": "Invitation lifecycle state." },
+        "expiresAtMillis": { "type": "integer", "description": "Expiration epoch milliseconds (~24h)." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["codeHash", "inviterUid", "inviterName", "status", "expiresAtMillis", "createdAt", "updatedAt"]
+    },
+    "CoupleConnection": {
+      "title": "CoupleConnection",
+      "description": "1-to-1 linked sanctuary between two partners.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array", "description": "Two member UIDs." },
+        "memberOneUid": { "type": "string" },
+        "memberTwoUid": { "type": "string" },
+        "memberOneName": { "type": "string" },
+        "memberTwoName": { "type": "string" },
+        "anniversaryLabel": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "disconnected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "memberOneUid", "memberTwoUid", "memberOneName", "memberTwoName", "status", "createdAt", "updatedAt"]
+    },
+    "SharedAlbum": {
+      "title": "SharedAlbum",
+      "description": "Explicitly shared album metadata between the linked couple.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "soundtrackTitle": { "type": "string" },
+        "itemCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "memberUids", "title", "itemCount", "createdAt", "updatedAt"]
+    },
+    "SharedMemory": {
+      "title": "SharedMemory",
+      "description": "Explicitly shared memory metadata between the linked couple.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "albumId": { "type": "string" },
+        "title": { "type": "string" },
+        "caption": { "type": "string" },
+        "story": { "type": "string" },
+        "locationName": { "type": "string" },
+        "mediaType": { "type": "string", "enum": ["photo", "video", "story"] },
+        "memoryDateMillis": { "type": "integer" },
+        "isFavorite": { "type": "boolean" },
+        "tags": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "memberUids", "title", "mediaType", "memoryDateMillis", "isFavorite", "createdAt", "updatedAt"]
+    },
+    "SharedContentRequest": {
+      "title": "SharedContentRequest",
+      "description": "Explicit EVORIA Share request requiring partner acceptance.",
+      "type": "object",
+      "properties": {
+        "senderUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "recipientUid": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "memoryId": { "type": "string" },
+        "albumId": { "type": "string" },
+        "title": { "type": "string" },
+        "caption": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined", "revoked"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderUid", "senderName", "recipientUid", "memberUids", "title", "status", "createdAt", "updatedAt"]
+    },
+    "SharedReflection": {
+      "title": "SharedReflection",
+      "description": "Explicitly shared journal, letter, or sealed time capsule.",
+      "type": "object",
+      "properties": {
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "kind": { "type": "string", "enum": ["journal", "letter", "capsule"] },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "unlockAtMillis": { "type": "integer" },
+        "isSealed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["authorUid", "authorName", "memberUids", "kind", "title", "body", "isSealed", "createdAt", "updatedAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "Activity notification within couple sanctuary.",
+      "type": "object",
+      "properties": {
+        "recipientUid": { "type": "string" },
+        "actorUid": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "kind": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recipientUid", "actorUid", "memberUids", "kind", "title", "body", "isRead", "createdAt", "updatedAt"]
+    },
+    "PrivateBackup": {
+      "title": "PrivateBackup",
+      "description": "Per-user private metadata backup snapshot for phone migration.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "deviceLabel": { "type": "string" },
+        "albumCount": { "type": "integer" },
+        "memoryCount": { "type": "integer" },
+        "reflectionCount": { "type": "integer" },
+        "payloadJson": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "deviceLabel", "albumCount", "memoryCount", "reflectionCount", "payloadJson", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Per-user profile and couple link state."
+    },
+    "/users/{userId}/private_backups/{backupId}": {
+      "schema": { "$ref": "#/entities/PrivateBackup" },
+      "description": "Strictly private user backup snapshots."
+    },
+    "/invitations/{inviteId}": {
+      "schema": { "$ref": "#/entities/Invitation" },
+      "description": "Hashed single-use 24h partner invitations."
+    },
+    "/couples/{coupleId}": {
+      "schema": { "$ref": "#/entities/CoupleConnection" },
+      "description": "1-to-1 couple connection document."
+    },
+    "/couples/{coupleId}/shared_albums/{albumId}": {
+      "schema": { "$ref": "#/entities/SharedAlbum" },
+      "description": "Explicitly shared albums between the couple."
+    },
+    "/couples/{coupleId}/shared_memories/{memoryId}": {
+      "schema": { "$ref": "#/entities/SharedMemory" },
+      "description": "Explicitly shared memories between the couple."
+    },
+    "/couples/{coupleId}/share_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/SharedContentRequest" },
+      "description": "Pending and resolved EVORIA Share requests."
+    },
+    "/couples/{coupleId}/shared_reflections/{reflectionId}": {
+      "schema": { "$ref": "#/entities/SharedReflection" },
+      "description": "Explicitly shared journals, letters, and sealed time capsules."
+    },
+    "/couples/{coupleId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "Activity notifications for couple members."
+    }
+  }
+}

@@ -1,0 +1,417 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOptionalString(data, key, maxLen) {
+      return !(key in data) || data[key] == null || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isValidStringList(listVal, maxItems) {
+      return listVal is list && listVal.size() <= maxItems && (listVal.size() == 0 || listVal[0] is string);
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             isOptionalString(data, 'partnerNickname', 60) &&
+             isOptionalString(data, 'avatarUrl', 500) &&
+             isOptionalString(data, 'coupleId', 128) &&
+             isOptionalString(data, 'partnerUid', 128) &&
+             isOptionalString(data, 'partnerDisplayName', 80) &&
+             data.aiSearchConsent is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidInvitation(data) {
+      return data.codeHash is string && data.codeHash.size() >= 16 && data.codeHash.size() <= 128 &&
+             data.inviterUid is string && data.inviterUid.size() >= 1 && data.inviterUid.size() <= 128 &&
+             data.inviterName is string && data.inviterName.size() >= 1 && data.inviterName.size() <= 80 &&
+             isOptionalString(data, 'recipientUid', 128) &&
+             isOptionalString(data, 'recipientName', 80) &&
+             isOptionalString(data, 'coupleId', 128) &&
+             data.status in ['pending', 'accepted', 'declined', 'canceled', 'expired'] &&
+             data.expiresAtMillis is int && data.expiresAtMillis > 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidCoupleConnection(data) {
+      return data.memberUids is list && data.memberUids.size() == 2 &&
+             data.memberOneUid is string && data.memberOneUid.size() >= 1 && data.memberOneUid.size() <= 128 &&
+             data.memberTwoUid is string && data.memberTwoUid.size() >= 1 && data.memberTwoUid.size() <= 128 &&
+             data.memberOneUid != data.memberTwoUid &&
+             data.memberOneUid in data.memberUids &&
+             data.memberTwoUid in data.memberUids &&
+             data.memberOneName is string && data.memberOneName.size() >= 1 && data.memberOneName.size() <= 80 &&
+             data.memberTwoName is string && data.memberTwoName.size() >= 1 && data.memberTwoName.size() <= 80 &&
+             isOptionalString(data, 'anniversaryLabel', 80) &&
+             data.status in ['active', 'disconnected'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isCoupleMember(coupleId) {
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/couples/$(coupleId)) &&
+             request.auth.uid in get(/databases/$(database)/documents/couples/$(coupleId)).data.memberUids &&
+             get(/databases/$(database)/documents/couples/$(coupleId)).data.status == 'active';
+    }
+
+    function isValidSharedAlbum(data) {
+      return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             data.memberUids is list && data.memberUids.size() == 2 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             isOptionalString(data, 'description', 500) &&
+             isOptionalString(data, 'soundtrackTitle', 120) &&
+             data.itemCount is int && data.itemCount >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSharedMemory(data) {
+      return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             data.memberUids is list && data.memberUids.size() == 2 &&
+             isOptionalString(data, 'albumId', 128) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             isOptionalString(data, 'caption', 600) &&
+             isOptionalString(data, 'story', 4000) &&
+             isOptionalString(data, 'locationName', 140) &&
+             data.mediaType in ['photo', 'video', 'story'] &&
+             data.memoryDateMillis is int && data.memoryDateMillis >= 0 &&
+             data.isFavorite is bool &&
+             (!('tags' in data) || isValidStringList(data.tags, 12)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidShareRequest(data) {
+      return data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+             data.recipientUid is string && data.recipientUid.size() >= 1 && data.recipientUid.size() <= 128 &&
+             data.senderUid != data.recipientUid &&
+             data.memberUids is list && data.memberUids.size() == 2 &&
+             isOptionalString(data, 'memoryId', 128) &&
+             isOptionalString(data, 'albumId', 128) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             isOptionalString(data, 'caption', 600) &&
+             data.status in ['pending', 'accepted', 'declined', 'revoked'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSharedReflection(data) {
+      return data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+             data.memberUids is list && data.memberUids.size() == 2 &&
+             data.kind in ['journal', 'letter', 'capsule'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 8000 &&
+             (!('unlockAtMillis' in data) || data.unlockAtMillis is int) &&
+             data.isSealed is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidNotification(data) {
+      return data.recipientUid is string && data.recipientUid.size() >= 1 && data.recipientUid.size() <= 128 &&
+             data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 &&
+             data.memberUids is list && data.memberUids.size() == 2 &&
+             data.kind is string && data.kind.size() >= 1 && data.kind.size() <= 40 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 400 &&
+             data.isRead is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPrivateBackup(data) {
+      return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             data.deviceLabel is string && data.deviceLabel.size() >= 1 && data.deviceLabel.size() <= 100 &&
+             data.albumCount is int && data.albumCount >= 0 &&
+             data.memoryCount is int && data.memoryCount >= 0 &&
+             data.reflectionCount is int && data.reflectionCount >= 0 &&
+             data.payloadJson is string && data.payloadJson.size() >= 2 && data.payloadJson.size() <= 400000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // 1. Users & Private Backups
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) &&
+                    (request.auth.uid == userId || (resource != null && existing().partnerUid == request.auth.uid));
+      allow list: if isSignedIn() && existing().userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'aiSearchConsent', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'partnerNickname', 'avatarUrl', 'coupleId', 'partnerUid', 'partnerDisplayName', 'aiSearchConsent', 'createdAt', 'updatedAt']) &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'partnerNickname', 'avatarUrl', 'coupleId', 'partnerUid', 'partnerDisplayName', 'aiSearchConsent', 'updatedAt']);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /private_backups/{backupId} {
+        allow get, delete: if isSignedIn() && isValidId(userId) && isValidId(backupId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(backupId) &&
+                         request.auth.uid == userId &&
+                         incoming().ownerUid == request.auth.uid &&
+                         incoming().keys().hasAll(['ownerUid', 'deviceLabel', 'albumCount', 'memoryCount', 'reflectionCount', 'payloadJson', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerUid', 'deviceLabel', 'albumCount', 'memoryCount', 'reflectionCount', 'payloadJson', 'createdAt', 'updatedAt']) &&
+                         isValidPrivateBackup(incoming());
+        allow update: if false;
+      }
+    }
+
+    // 2. Partner Invitations (Hashed 6-char codes, single-use, 24h expiry, anti-self-link)
+    match /invitations/{inviteId} {
+      // Recipient can look up a single invitation by knowing the exact hashed code ID
+      allow get: if isSignedIn() && isValidId(inviteId);
+      // Queries are strictly scoped to invitations the user sent or received
+      allow list: if isSignedIn() && (existing().inviterUid == request.auth.uid || existing().recipientUid == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(inviteId) &&
+                       incoming().codeHash == inviteId &&
+                       incoming().inviterUid == request.auth.uid &&
+                       incoming().status == 'pending' &&
+                       incoming().keys().hasAll(['codeHash', 'inviterUid', 'inviterName', 'status', 'expiresAtMillis', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['codeHash', 'inviterUid', 'inviterName', 'status', 'expiresAtMillis', 'createdAt', 'updatedAt']) &&
+                       isValidInvitation(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(inviteId) &&
+                       isValidInvitation(incoming()) &&
+                       existing().status == 'pending' &&
+                       incoming().codeHash == existing().codeHash &&
+                       incoming().inviterUid == existing().inviterUid &&
+                       incoming().inviterName == existing().inviterName &&
+                       incoming().expiresAtMillis == existing().expiresAtMillis &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         // Action 1: Inviter cancels pending invitation
+                         (existing().inviterUid == request.auth.uid &&
+                          incoming().status == 'canceled' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+                         // Action 2: Different user explicitly accepts or declines pending invitation
+                         (existing().inviterUid != request.auth.uid &&
+                          incoming().recipientUid == request.auth.uid &&
+                          incoming().status in ['accepted', 'declined'] &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['recipientUid', 'recipientName', 'coupleId', 'status', 'updatedAt']))
+                       );
+
+      allow delete: if isSignedIn() && isValidId(inviteId) && existing().inviterUid == request.auth.uid;
+    }
+
+    // 3. Couple Sanctuary (1-to-1)
+    match /couples/{coupleId} {
+      allow get: if isSignedIn() && isValidId(coupleId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in existing().memberUids;
+
+      allow create: if isSignedIn() &&
+                       isValidId(coupleId) &&
+                       request.auth.uid in incoming().memberUids &&
+                       incoming().status == 'active' &&
+                       incoming().keys().hasAll(['memberUids', 'memberOneUid', 'memberTwoUid', 'memberOneName', 'memberTwoName', 'status', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['memberUids', 'memberOneUid', 'memberTwoUid', 'memberOneName', 'memberTwoName', 'anniversaryLabel', 'status', 'createdAt', 'updatedAt']) &&
+                       isValidCoupleConnection(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(coupleId) &&
+                       request.auth.uid in existing().memberUids &&
+                       existing().status == 'active' &&
+                       isValidCoupleConnection(incoming()) &&
+                       incoming().memberUids == existing().memberUids &&
+                       incoming().memberOneUid == existing().memberOneUid &&
+                       incoming().memberTwoUid == existing().memberTwoUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         // Update anniversary or display labels
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberOneName', 'memberTwoName', 'anniversaryLabel', 'updatedAt']) ||
+                         // Disconnect couple
+                         (incoming().status == 'disconnected' &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+                       );
+
+      allow delete: if false;
+
+      match /shared_albums/{albumId} {
+        allow get: if isValidId(coupleId) && isValidId(albumId) && isCoupleMember(coupleId);
+        allow list: if isSignedIn() && isValidId(coupleId) && request.auth.uid in existing().memberUids;
+
+        allow create: if isValidId(coupleId) && isValidId(albumId) &&
+                         isCoupleMember(coupleId) &&
+                         incoming().ownerUid == request.auth.uid &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['ownerUid', 'memberUids', 'title', 'itemCount', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerUid', 'memberUids', 'title', 'description', 'soundtrackTitle', 'itemCount', 'createdAt', 'updatedAt']) &&
+                         isValidSharedAlbum(incoming());
+
+        allow update: if isValidId(coupleId) && isValidId(albumId) &&
+                         isCoupleMember(coupleId) &&
+                         request.auth.uid in existing().memberUids &&
+                         incoming().ownerUid == existing().ownerUid &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidSharedAlbum(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'soundtrackTitle', 'itemCount', 'updatedAt']);
+
+        allow delete: if isValidId(coupleId) && isValidId(albumId) &&
+                         isCoupleMember(coupleId) &&
+                         existing().ownerUid == request.auth.uid;
+      }
+
+      match /shared_memories/{memoryId} {
+        allow get: if isValidId(coupleId) && isValidId(memoryId) && isCoupleMember(coupleId);
+        allow list: if isSignedIn() && isValidId(coupleId) && request.auth.uid in existing().memberUids;
+
+        allow create: if isValidId(coupleId) && isValidId(memoryId) &&
+                         isCoupleMember(coupleId) &&
+                         incoming().ownerUid == request.auth.uid &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['ownerUid', 'memberUids', 'title', 'mediaType', 'memoryDateMillis', 'isFavorite', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['ownerUid', 'memberUids', 'albumId', 'title', 'caption', 'story', 'locationName', 'mediaType', 'memoryDateMillis', 'isFavorite', 'tags', 'createdAt', 'updatedAt']) &&
+                         isValidSharedMemory(incoming());
+
+        allow update: if isValidId(coupleId) && isValidId(memoryId) &&
+                         isCoupleMember(coupleId) &&
+                         request.auth.uid in existing().memberUids &&
+                         incoming().ownerUid == existing().ownerUid &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidSharedMemory(incoming()) &&
+                         (
+                           (existing().ownerUid == request.auth.uid &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['albumId', 'title', 'caption', 'story', 'locationName', 'isFavorite', 'tags', 'updatedAt'])) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly(['isFavorite', 'updatedAt'])
+                         );
+
+        allow delete: if isValidId(coupleId) && isValidId(memoryId) &&
+                         isCoupleMember(coupleId) &&
+                         existing().ownerUid == request.auth.uid;
+      }
+
+      match /share_requests/{requestId} {
+        allow get: if isValidId(coupleId) && isValidId(requestId) && isCoupleMember(coupleId);
+        allow list: if isSignedIn() && isValidId(coupleId) && request.auth.uid in existing().memberUids;
+
+        allow create: if isValidId(coupleId) && isValidId(requestId) &&
+                         isCoupleMember(coupleId) &&
+                         incoming().senderUid == request.auth.uid &&
+                         incoming().status == 'pending' &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['senderUid', 'senderName', 'recipientUid', 'memberUids', 'title', 'status', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['senderUid', 'senderName', 'recipientUid', 'memberUids', 'memoryId', 'albumId', 'title', 'caption', 'status', 'createdAt', 'updatedAt']) &&
+                         isValidShareRequest(incoming());
+
+        allow update: if isValidId(coupleId) && isValidId(requestId) &&
+                         isCoupleMember(coupleId) &&
+                         isValidShareRequest(incoming()) &&
+                         existing().status == 'pending' &&
+                         incoming().senderUid == existing().senderUid &&
+                         incoming().recipientUid == existing().recipientUid &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().createdAt == existing().createdAt &&
+                         (
+                           (existing().recipientUid == request.auth.uid &&
+                            incoming().status in ['accepted', 'declined'] &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+                           (existing().senderUid == request.auth.uid &&
+                            incoming().status == 'revoked' &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+                         );
+
+        allow delete: if isValidId(coupleId) && isValidId(requestId) &&
+                         isCoupleMember(coupleId) &&
+                         existing().senderUid == request.auth.uid;
+      }
+
+      match /shared_reflections/{reflectionId} {
+        allow get: if isValidId(coupleId) && isValidId(reflectionId) && isCoupleMember(coupleId);
+        allow list: if isSignedIn() && isValidId(coupleId) && request.auth.uid in existing().memberUids;
+
+        allow create: if isValidId(coupleId) && isValidId(reflectionId) &&
+                         isCoupleMember(coupleId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['authorUid', 'authorName', 'memberUids', 'kind', 'title', 'body', 'isSealed', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['authorUid', 'authorName', 'memberUids', 'kind', 'title', 'body', 'unlockAtMillis', 'isSealed', 'createdAt', 'updatedAt']) &&
+                         isValidSharedReflection(incoming());
+
+        allow update: if isValidId(coupleId) && isValidId(reflectionId) &&
+                         isCoupleMember(coupleId) &&
+                         existing().authorUid == request.auth.uid &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().kind == existing().kind &&
+                         incoming().createdAt == existing().createdAt &&
+                         // Sealed time capsules cannot be edited to unlock earlier
+                         (!existing().isSealed || incoming().unlockAtMillis == existing().unlockAtMillis) &&
+                         isValidSharedReflection(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'body', 'isSealed', 'updatedAt']);
+
+        allow delete: if isValidId(coupleId) && isValidId(reflectionId) &&
+                         isCoupleMember(coupleId) &&
+                         existing().authorUid == request.auth.uid;
+      }
+
+      match /notifications/{notificationId} {
+        allow get: if isValidId(coupleId) && isValidId(notificationId) && isCoupleMember(coupleId);
+        allow list: if isSignedIn() && isValidId(coupleId) && request.auth.uid in existing().memberUids;
+
+        allow create: if isValidId(coupleId) && isValidId(notificationId) &&
+                         isCoupleMember(coupleId) &&
+                         incoming().actorUid == request.auth.uid &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['recipientUid', 'actorUid', 'memberUids', 'kind', 'title', 'body', 'isRead', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['recipientUid', 'actorUid', 'memberUids', 'kind', 'title', 'body', 'isRead', 'createdAt', 'updatedAt']) &&
+                         isValidNotification(incoming());
+
+        allow update: if isValidId(coupleId) && isValidId(notificationId) &&
+                         isCoupleMember(coupleId) &&
+                         existing().recipientUid == request.auth.uid &&
+                         incoming().recipientUid == existing().recipientUid &&
+                         incoming().actorUid == existing().actorUid &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidNotification(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']);
+
+        allow delete: if isValidId(coupleId) && isValidId(notificationId) &&
+                         isCoupleMember(coupleId) &&
+                         (existing().recipientUid == request.auth.uid || existing().actorUid == request.auth.uid);
+      }
+    }
+  }
+}

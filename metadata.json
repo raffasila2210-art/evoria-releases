@@ -1,0 +1,6 @@
+{
+  "name": "EVORIA",
+  "description": "Ruang kenangan pribadi untuk berdua — A place you've been before.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
