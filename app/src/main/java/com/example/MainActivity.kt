@@ -1053,6 +1053,7 @@ private fun ProfilTabHost(
   val journals by viewModel.journals.collectAsStateWithLifecycle()
   val capsules by viewModel.timeCapsules.collectAsStateWithLifecycle()
   val shareRequests by viewModel.shareRequests.collectAsStateWithLifecycle()
+  val sharedMusic by viewModel.sharedMusic.collectAsStateWithLifecycle()
   val localNotifications by viewModel.localNotifications.collectAsStateWithLifecycle()
   val remoteNotifications by viewModel.remoteNotifications.collectAsStateWithLifecycle()
   val localStorageLabel by viewModel.localStorageLabel.collectAsStateWithLifecycle()
@@ -1061,8 +1062,9 @@ private fun ProfilTabHost(
       localNotifications.count { !it.isRead } + remoteNotifications.count { !it.isRead }
     }
   val pendingSharesCount =
-    remember(shareRequests, currentUid) {
-      shareRequests.count { it.status == "pending" && it.recipientUid == currentUid }
+    remember(shareRequests, sharedMusic, currentUid) {
+      shareRequests.count { it.status == "pending" && it.recipientUid == currentUid } +
+        sharedMusic.count { it.status == "pending" && it.recipientUid == currentUid }
     }
   ProfilScreen(
     currentUid = currentUid,

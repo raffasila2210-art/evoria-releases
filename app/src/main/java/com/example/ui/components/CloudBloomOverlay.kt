@@ -102,14 +102,14 @@ fun CloudBloomOverlay(
     exit = fadeOut(tween(340)),
   ) {
     val t = timeline.value
-    // Cloud veil: 0..0.34 closes fully in, 0.34..0.52 holds thick full screen, 0.52..1.0 parts smoothly
-    val closeFraction = (t / 0.32f).coerceIn(0f, 1f)
-    val partFraction = ((t - 0.42f) / 0.58f).coerceIn(0f, 1f)
+    // Cloud veil: 0..0.28 closes completely to 100%, 0.28..0.46 holds full cloud cover, 0.46..1.0 parts outward
+    val closeFraction = (t / 0.28f).coerceIn(0f, 1f)
+    val partFraction = ((t - 0.40f) / 0.60f).coerceIn(0f, 1f)
     val veilAlpha =
       when {
-        t < 0.32f -> closeFraction * 0.94f
-        t < 0.48f -> 0.94f
-        else -> (1f - ((t - 0.48f) / 0.52f)).coerceIn(0f, 1f) * 0.94f
+        t < 0.28f -> closeFraction
+        t < 0.46f -> 1f
+        else -> (1f - ((t - 0.46f) / 0.54f)).coerceIn(0f, 1f)
       }
     // Golden light-leak peaks while clouds are parting
     val lightLeakIntensity =
@@ -141,19 +141,19 @@ fun CloudBloomOverlay(
         val center = Offset(w / 2f, h / 2f)
 
         val skyTint =
-          if (tokens.isDark) Color(0xFF1F1917).copy(alpha = veilAlpha * 0.86f)
-          else Color(0xFFFFF8F2).copy(alpha = veilAlpha * 0.92f)
+          if (tokens.isDark) Color(0xFF1F1917).copy(alpha = (veilAlpha * 0.96f).coerceIn(0f, 1f))
+          else Color(0xFFFFF8F2).copy(alpha = (veilAlpha * 0.99f).coerceIn(0f, 1f))
         drawRect(color = skyTint)
 
         val cloudCore =
-          if (tokens.isDark) Color(0xFFEADCD1).copy(alpha = veilAlpha * 0.72f)
-          else Color(0xFFFFFFFF).copy(alpha = veilAlpha * 0.96f)
-        val cloudWarmRim = tokens.accentPeach.copy(alpha = veilAlpha * 0.68f)
-        val cloudDeepTint = tokens.primaryTerracotta.copy(alpha = veilAlpha * 0.32f)
+          if (tokens.isDark) Color(0xFFEADCD1).copy(alpha = (veilAlpha * 0.82f).coerceIn(0f, 1f))
+          else Color(0xFFFFFFFF).copy(alpha = veilAlpha)
+        val cloudWarmRim = tokens.accentPeach.copy(alpha = (veilAlpha * 0.78f).coerceIn(0f, 1f))
+        val cloudDeepTint = tokens.primaryTerracotta.copy(alpha = (veilAlpha * 0.38f).coerceIn(0f, 1f))
 
-        val slideOutX = partFraction * w * 0.72f
-        val slideOutY = partFraction * h * 0.52f
-        val baseR = size.minDimension * (0.28f + closeFraction * 0.22f)
+        val slideOutX = partFraction * w * 0.75f
+        val slideOutY = partFraction * h * 0.55f
+        val baseR = size.minDimension * (0.34f + closeFraction * 0.26f)
 
         // Multi-lobed left & right volumetric cloud banks converging then parting
         val leftOffset = -w * 0.28f * (1f - closeFraction) - slideOutX

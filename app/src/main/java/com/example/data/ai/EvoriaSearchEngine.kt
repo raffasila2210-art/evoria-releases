@@ -3,6 +3,8 @@ package com.example.data.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.util.Log
 import com.example.data.local.LocalMemoryEntity
@@ -16,6 +18,9 @@ import java.util.Calendar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -26,6 +31,7 @@ data class SearchOutcome(
   val explanation: String,
   val isFallbackNotice: String? = null,
   val detectedTags: List<String> = emptyList(),
+  val discoveredTagsByMemoryId: Map<String, List<String>> = emptyMap(),
 )
 
 data class AiMemoryStoryDraft(
@@ -45,6 +51,7 @@ interface JelajahSearchRepository {
     query: String,
     candidates: List<LocalMemoryEntity>,
     allowCloudAi: Boolean,
+    albumTitlesById: Map<String, String> = emptyMap(),
   ): SearchOutcome
 }
 
@@ -53,6 +60,20 @@ class EvoriaSearchEngine(
 ) : JelajahSearchRepository {
 
   private val appContext = context?.applicationContext
+
+  private val searchItemSchema =
+    Schema.obj(
+      properties =
+        mapOf(
+          "id" to Schema.string(description = "ID kenangan yang cocok."),
+          "tags" to
+            Schema.array(
+              items = Schema.string(),
+              description = "2 sampai 4 label objek/suasana visual singkat dalam huruf kecil (mis: pantai, sunset, kopi).",
+            ),
+        ),
+      optionalProperties = listOf("tags"),
+    )
 
   private val searchSchema =
     Schema.obj(
@@ -63,17 +84,22 @@ class EvoriaSearchEngine(
               items = Schema.string(),
               description = "ID kenangan yang paling cocok secara visual maupun kontekstual dengan kueri pengguna.",
             ),
+          "matchedItems" to
+            Schema.array(
+              items = searchItemSchema,
+              description = "Rincian ID yang cocok beserta tag visual terdeteksi per foto.",
+            ),
           "detectedTags" to
             Schema.array(
               items = Schema.string(),
-              description = "Maksimal 4 kata kunci visual atau objek yang terdeteksi dari foto/kenangan yang cocok.",
+              description = "Maksimal 5 kata kunci visual atau objek yang terdeteksi dari foto/kenangan yang cocok.",
             ),
           "reason" to
             Schema.string(
               description = "Penjelasan singkat dalam Bahasa Indonesia yang hangat (maks 1 kalimat).",
             ),
         ),
-      optionalProperties = listOf("detectedTags", "reason"),
+      optionalProperties = listOf("matchedItems", "detectedTags", "reason"),
     )
 
   private val model by lazy {
@@ -144,6 +170,7 @@ class EvoriaSearchEngine(
     query: String,
     candidates: List<LocalMemoryEntity>,
     allowCloudAi: Boolean,
+    albumTitlesById: Map<String, String>,
   ): SearchOutcome {
     val trimmed = query.trim()
     if (trimmed.isEmpty()) {
@@ -155,7 +182,10 @@ class EvoriaSearchEngine(
     }
 
     if (!allowCloudAi || candidates.isEmpty()) {
-      val localMatches = withContext(Dispatchers.Default) { localMetadataSearch(trimmed, candidates) }
+      val localMatches =
+        withContext(Dispatchers.Default) {
+          localMetadataSearch(trimmed, candidates, albumTitlesById)
+        }
       val notice =
         if (!allowCloudAi) {
           "Mode Pencarian Lokal Aktif — Pencarian visual AI Gemini dapat diaktifkan pada kartu privasi di atas."
@@ -164,102 +194,110 @@ class EvoriaSearchEngine(
         matchingMemoryIds = localMatches,
         usedCloudAi = false,
         explanation =
-          if (localMatches.isEmpty()) "Tidak ditemukan kecocokan pada judul, caption, lokasi, atau tag lokal."
+          if (localMatches.isEmpty()) "Tidak ditemukan kecocokan pada judul, caption, lokasi, album, atau tag lokal."
           else "Ditemukan ${localMatches.size} kenangan yang cocok dari pencarian pintar lokal.",
         isFallbackNotice = notice,
       )
     }
 
-    // Build metadata summary for up to 60 candidates
-    val recentCandidates = candidates.sortedByDescending { it.memoryDateMillis }.take(60)
-    val indexSummary =
-      recentCandidates.joinToString("\n") { m ->
-        "- id=${m.id} | judul=${m.title} | caption=${m.caption} | lokasi=${m.locationName} | tag=${m.tagsCsv} | tipe=${m.mediaType} | favorit=${m.isFavorite}"
+    val validIds = candidates.map { it.id }.toSet()
+    val sortedCandidates = candidates.sortedByDescending { it.memoryDateMillis }
+    val localBaselineMatches =
+      withContext(Dispatchers.Default) {
+        localMetadataSearch(trimmed, sortedCandidates, albumTitlesById)
       }
 
-    // Attach lightweight downsampled thumbnails (max 384px edge, up to 10 photos) off the main thread
-    val thumbnailPairs: List<Pair<String, Bitmap>> =
-      if (appContext != null) {
-        withContext(Dispatchers.IO) {
-          recentCandidates
-            .filter { !it.mediaUri.isNullOrBlank() && it.mediaType.lowercase() != "video" }
-            .take(MAX_MULTIMODAL_IMAGES)
-            .mapNotNull { mem ->
-              val bmp = decodeSampledThumbnail(mem.mediaUri)
-              if (bmp != null) mem.id to bmp else null
-            }
-        }
-      } else {
-        emptyList()
-      }
+    // Prioritize visual analysis on all photo candidates (up to 36 across 3 batches, preferring untagged/galeri-imported first)
+    val photoPool =
+      sortedCandidates
+        .filter { !it.mediaUri.isNullOrBlank() && it.mediaType.lowercase() != "video" }
+        .sortedWith(
+          compareBy<LocalMemoryEntity> { m ->
+            val tags = m.tagsCsv.trim().lowercase()
+            if (tags.isBlank() || tags == "galeri") 0 else 1
+          }.thenByDescending { it.memoryDateMillis }
+        )
+        .take(MAX_TOTAL_VISUAL_PHOTOS)
 
-    val promptText =
-      """
-      Kamu adalah mesin pencari foto visual & semantik seperti Google Photos untuk aplikasi kenangan EVORIA (bukan chatbot).
-      Tugasmu menganalisis isi visual gambar yang terlampir DAN metadata setiap item, lalu memilih daftar `id` kenangan yang paling cocok dengan maksud kueri pengguna dalam Bahasa Indonesia.
-      Contoh: jika pengguna mencari "kapal ferry di laut", "pantai", "senyum di dekat air", "langit senja", atau "kopi", cocokkan objek visual di foto walaupun tidak tertulis di judul atau caption!
-      Jangan mengarang id yang tidak ada di daftar. Jika tidak ada yang relevan, kembalikan array kosong.
-      
-      Kueri pengguna: "$trimmed"
-      
-      Daftar metadata kenangan (${recentCandidates.size} item):
-      $indexSummary
-      """.trimIndent()
+    val textOnlyCandidates =
+      sortedCandidates.filter { m -> photoPool.none { it.id == m.id } }.take(40)
 
-    val requestContent =
-      content {
-        text(promptText)
-        thumbnailPairs.forEach { (id, bitmap) ->
-          text("Pratinjau foto untuk id=$id:")
-          image(bitmap)
-        }
-      }
+    val batches = photoPool.chunked(BATCH_IMAGE_COUNT).take(MAX_BATCHES)
+    val bitmapsToRecycle = mutableListOf<Bitmap>()
 
     return try {
-      val response = withTimeout(60_000L) { model.generateContent(requestContent) }
-      val raw = response.text ?: throw IllegalStateException("Respons AI kosong.")
-      val json = JSONObject(raw)
-      val validIds = candidates.map { it.id }.toSet()
-
-      val idsJson = json.optJSONArray("matchedIds")
-      val matched = buildList {
-        if (idsJson != null) {
-          for (i in 0 until idsJson.length()) {
-            val id = idsJson.optString(i)
-            if (id in validIds && id !in this) add(id)
+      val batchResults =
+        if (batches.isEmpty()) {
+          listOf(
+            runSingleGeminiBatch(
+              query = trimmed,
+              batchCandidates = sortedCandidates.take(60),
+              albumTitlesById = albumTitlesById,
+              bitmapsToRecycle = bitmapsToRecycle,
+              includeImages = false,
+            )
+          )
+        } else {
+          coroutineScope {
+            batches.mapIndexed { idx, photoChunk ->
+              val extraText = if (idx == 0) textOnlyCandidates else emptyList()
+              async {
+                runSingleGeminiBatch(
+                  query = trimmed,
+                  batchCandidates = photoChunk + extraText,
+                  albumTitlesById = albumTitlesById,
+                  bitmapsToRecycle = bitmapsToRecycle,
+                  includeImages = true,
+                )
+              }
+            }.awaitAll()
           }
+        }
+
+      val orderedMatched = linkedSetOf<String>()
+      val discoveredTagsById = mutableMapOf<String, MutableList<String>>()
+      val combinedDetectedTags = linkedSetOf<String>()
+      var firstReason: String? = null
+
+      batchResults.forEach { res ->
+        res.matchedIds.forEach { id ->
+          if (id in validIds) orderedMatched.add(id)
+        }
+        res.discoveredTagsByMemoryId.forEach { (id, tags) ->
+          if (id in validIds) {
+            val list = discoveredTagsById.getOrPut(id) { mutableListOf() }
+            tags.forEach { t -> if (t !in list) list.add(t) }
+          }
+        }
+        res.detectedTags.forEach { combinedDetectedTags.add(it) }
+        if (firstReason.isNullOrBlank() && !res.reason.isNullOrBlank()) {
+          firstReason = res.reason
         }
       }
 
-      val tagsJson = json.optJSONArray("detectedTags")
-      val tags = buildList {
-        if (tagsJson != null) {
-          for (i in 0 until tagsJson.length()) {
-            val t = tagsJson.optString(i).trim()
-            if (t.isNotEmpty() && t !in this) add(t)
-          }
-        }
-      }.take(4)
+      // Append any high-confidence local semantic/album matches beyond visual batches
+      localBaselineMatches.forEach { orderedMatched.add(it) }
 
-      val reason =
-        json.optString("reason").takeIf { it.isNotBlank() }
-          ?: if (thumbnailPairs.isNotEmpty()) {
-            "Dicocokkan secara visual dari ${thumbnailPairs.size} foto & metadata oleh Gemini AI."
+      val resolvedList = orderedMatched.toList()
+      val resolvedReason =
+        firstReason
+          ?: if (resolvedList.isEmpty()) {
+            "Gemini AI sudah memeriksa ${photoPool.size} foto dan metadata tanpa kecocokan langsung untuk \"$trimmed\"."
           } else {
-            "Dicocokkan menggunakan Gemini AI berdasarkan konteks dan deskripsi kenangan."
+            "Dicocokkan oleh Gemini Vision dari ${photoPool.size} foto, album, dan metadata kenangan."
           }
 
       SearchOutcome(
-        matchingMemoryIds = matched,
+        matchingMemoryIds = resolvedList,
         usedCloudAi = true,
-        explanation = reason,
-        detectedTags = tags,
+        explanation = resolvedReason,
+        detectedTags = combinedDetectedTags.take(6),
+        discoveredTagsByMemoryId = discoveredTagsById.mapValues { it.value.take(6) },
       )
     } catch (e: TimeoutCancellationException) {
       Log.w(TAG, "AI search timeout, falling back to local search", e)
-      val local = withContext(Dispatchers.Default) { localMetadataSearch(trimmed, candidates) }
       SearchOutcome(
-        matchingMemoryIds = local,
+        matchingMemoryIds = localBaselineMatches,
         usedCloudAi = false,
         explanation = "Koneksi AI habis waktu. Menampilkan hasil pencarian pintar lokal.",
         isFallbackNotice = "Timeout AI — beralih otomatis ke pencarian lokal.",
@@ -268,18 +306,137 @@ class EvoriaSearchEngine(
       throw e
     } catch (e: Exception) {
       Log.e(TAG, "AI search failed, using local metadata fallback", e)
-      val local = withContext(Dispatchers.Default) { localMetadataSearch(trimmed, candidates) }
       SearchOutcome(
-        matchingMemoryIds = local,
+        matchingMemoryIds = localBaselineMatches,
         usedCloudAi = false,
-        explanation = "Pencarian AI Cloud sedang tidak tersedia (${e.localizedMessage ?: "gangguan jaringan"}). Menampilkan hasil pencarian lokal.",
+        explanation =
+          "Pencarian AI Cloud sedang tidak tersedia (${e.localizedMessage ?: "gangguan jaringan"}). Menampilkan hasil pencarian lokal.",
         isFallbackNotice = "Fallback Pencarian Lokal (metadata/semantik/waktu) aktif.",
       )
     } finally {
-      thumbnailPairs.forEach { (_, bmp) ->
-        if (!bmp.isRecycled) bmp.recycle()
+      synchronized(bitmapsToRecycle) {
+        bitmapsToRecycle.forEach { bmp ->
+          if (!bmp.isRecycled) bmp.recycle()
+        }
+        bitmapsToRecycle.clear()
       }
     }
+  }
+
+  private data class BatchAiResult(
+    val matchedIds: List<String>,
+    val detectedTags: List<String>,
+    val discoveredTagsByMemoryId: Map<String, List<String>>,
+    val reason: String?,
+  )
+
+  private suspend fun runSingleGeminiBatch(
+    query: String,
+    batchCandidates: List<LocalMemoryEntity>,
+    albumTitlesById: Map<String, String>,
+    bitmapsToRecycle: MutableList<Bitmap>,
+    includeImages: Boolean,
+  ): BatchAiResult {
+    val indexSummary =
+      batchCandidates.joinToString("\n") { m ->
+        val albumLabel = m.albumId?.let { albumTitlesById[it] }.orEmpty().ifBlank { "Tanpa Album" }
+        "- id=${m.id} | judul=${m.title} | album=$albumLabel | caption=${m.caption} | lokasi=${m.locationName} | tag=${m.tagsCsv} | tipe=${m.mediaType} | favorit=${m.isFavorite}"
+      }
+
+    val thumbnailPairs: List<Pair<String, Bitmap>> =
+      if (includeImages && appContext != null) {
+        withContext(Dispatchers.IO) {
+          batchCandidates
+            .filter { !it.mediaUri.isNullOrBlank() && it.mediaType.lowercase() != "video" }
+            .take(BATCH_IMAGE_COUNT)
+            .mapNotNull { mem ->
+              val bmp = decodeSampledThumbnail(mem.mediaUri)
+              if (bmp != null) {
+                synchronized(bitmapsToRecycle) { bitmapsToRecycle.add(bmp) }
+                mem.id to bmp
+              } else {
+                null
+              }
+            }
+        }
+      } else {
+        emptyList()
+      }
+
+    val promptText =
+      """
+      Kamu adalah mesin pencari foto visual & semantik cerdas seperti Google Photos untuk aplikasi kenangan EVORIA (bukan chatbot).
+      Tugasmu menganalisis isi visual setiap gambar yang terlampir secara menyeluruh (objek, orang, pose, pakaian, warna, tempat, suasana, cahaya, teks di foto) DAN metadata/album di bawah, lalu memilih `matchedIds` yang relevan dengan maksud kueri pengguna (dalam Bahasa Indonesia maupun Inggris).
+      CATATAN PENTING: Banyak foto diimpor dengan judul generik seperti "Galeri Kita" tanpa caption. Untuk foto seperti itu, ANDALKAN isi visual foto sepenuhnya! Jangan menolak foto hanya karena judulnya generik.
+      Untuk setiap item yang cocok, isi juga `matchedItems` berisi `{ "id": "...", "tags": ["objek1", "suasana2"] }` dalam huruf kecil agar foto tersebut lebih mudah dicari ke depannya.
+      Jangan mengarang id yang tidak ada di daftar. Jika tidak ada yang relevan di batch ini, kembalikan array kosong.
+
+      Kueri pengguna: "$query"
+
+      Daftar kenangan batch ini (${batchCandidates.size} item):
+      $indexSummary
+      """.trimIndent()
+
+    val requestContent =
+      content {
+        text(promptText)
+        thumbnailPairs.forEach { (id, bitmap) ->
+          text("Foto id=$id:")
+          image(bitmap)
+        }
+      }
+
+    val response = withTimeout(60_000L) { model.generateContent(requestContent) }
+    val raw = response.text ?: throw IllegalStateException("Respons AI kosong.")
+    val json = JSONObject(raw)
+
+    val matched = linkedSetOf<String>()
+    val idsJson = json.optJSONArray("matchedIds")
+    if (idsJson != null) {
+      for (i in 0 until idsJson.length()) {
+        val id = idsJson.optString(i).trim()
+        if (id.isNotEmpty()) matched.add(id)
+      }
+    }
+
+    val perMemoryTags = mutableMapOf<String, List<String>>()
+    val itemsJson = json.optJSONArray("matchedItems")
+    if (itemsJson != null) {
+      for (i in 0 until itemsJson.length()) {
+        val obj = itemsJson.optJSONObject(i) ?: continue
+        val id = obj.optString("id").trim()
+        if (id.isNotEmpty()) {
+          matched.add(id)
+          val arr = obj.optJSONArray("tags")
+          val itemTags = buildList {
+            if (arr != null) {
+              for (j in 0 until arr.length()) {
+                val t = arr.optString(j).trim().lowercase()
+                if (t.isNotEmpty() && t !in this) add(t)
+              }
+            }
+          }
+          if (itemTags.isNotEmpty()) perMemoryTags[id] = itemTags
+        }
+      }
+    }
+
+    val tagsJson = json.optJSONArray("detectedTags")
+    val detected = buildList {
+      if (tagsJson != null) {
+        for (i in 0 until tagsJson.length()) {
+          val t = tagsJson.optString(i).trim().lowercase()
+          if (t.isNotEmpty() && t !in this) add(t)
+        }
+      }
+    }
+
+    return BatchAiResult(
+      matchedIds = matched.toList(),
+      detectedTags = detected,
+      discoveredTagsByMemoryId = perMemoryTags,
+      reason = json.optString("reason").trim().takeIf { it.isNotBlank() },
+    )
   }
 
   suspend fun generateMemoryStorySuggestion(
@@ -407,7 +564,11 @@ class EvoriaSearchEngine(
     }
   }
 
-  fun localMetadataSearch(query: String, candidates: List<LocalMemoryEntity>): List<String> {
+  fun localMetadataSearch(
+    query: String,
+    candidates: List<LocalMemoryEntity>,
+    albumTitlesById: Map<String, String> = emptyMap(),
+  ): List<String> {
     val loweredQuery = query.lowercase().trim()
     val allTokens =
       loweredQuery
@@ -438,8 +599,9 @@ class EvoriaSearchEngine(
 
     return candidates
       .mapNotNull { mem ->
+        val albumTitle = mem.albumId?.let { albumTitlesById[it] }.orEmpty()
         val haystack =
-          "${mem.title} ${mem.caption} ${mem.story} ${mem.locationName} ${mem.tagsCsv} ${mem.mediaType} ${mem.visibility}"
+          "${mem.title} ${mem.caption} ${mem.story} ${mem.locationName} ${mem.tagsCsv} $albumTitle ${mem.mediaType} ${mem.visibility}"
             .lowercase()
 
         var contentScore = 0
@@ -454,7 +616,6 @@ class EvoriaSearchEngine(
           }
         }
 
-        // If user entered specific topic keywords, require at least one content/synonym hit
         if (contentTokens.isNotEmpty() && contentScore == 0) {
           return@mapNotNull null
         }
@@ -496,19 +657,47 @@ class EvoriaSearchEngine(
       val decoded = openStreamForUri(ctx, uri)?.use { BitmapFactory.decodeStream(it, null, decodeOpts) }
         ?: return@runCatching null
 
-      val maxSide = maxOf(decoded.width, decoded.height)
+      val exifRotation = readExifRotationDegrees(ctx, uri)
+      val oriented =
+        if (exifRotation != 0f) {
+          val matrix = Matrix().apply { postRotate(exifRotation) }
+          Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true).also {
+            if (it !== decoded) decoded.recycle()
+          }
+        } else {
+          decoded
+        }
+
+      val maxSide = maxOf(oriented.width, oriented.height)
       if (maxSide <= maxEdgePx) {
-        decoded
+        oriented
       } else {
         val ratio = maxEdgePx.toFloat() / maxSide.toFloat()
-        val targetW = (decoded.width * ratio).toInt().coerceAtLeast(1)
-        val targetH = (decoded.height * ratio).toInt().coerceAtLeast(1)
-        Bitmap.createScaledBitmap(decoded, targetW, targetH, true).also {
-          if (it !== decoded) decoded.recycle()
+        val targetW = (oriented.width * ratio).toInt().coerceAtLeast(1)
+        val targetH = (oriented.height * ratio).toInt().coerceAtLeast(1)
+        Bitmap.createScaledBitmap(oriented, targetW, targetH, true).also {
+          if (it !== oriented) oriented.recycle()
         }
       }
     }.getOrNull()
   }
+
+  private fun readExifRotationDegrees(ctx: Context, uri: Uri): Float =
+    runCatching {
+      val orientation =
+        openStreamForUri(ctx, uri)?.use { stream ->
+          ExifInterface(stream).getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL,
+          )
+        } ?: ExifInterface.ORIENTATION_NORMAL
+      when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+        ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+        ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+        else -> 0f
+      }
+    }.getOrDefault(0f)
 
   private fun openStreamForUri(ctx: Context, uri: Uri) =
     when (uri.scheme?.lowercase()) {
@@ -518,7 +707,10 @@ class EvoriaSearchEngine(
 
   private companion object {
     const val TAG = "EvoriaSearchEngine"
-    const val MAX_MULTIMODAL_IMAGES = 10
+    const val BATCH_IMAGE_COUNT = 12
+    const val MAX_BATCHES = 3
+    const val MAX_TOTAL_VISUAL_PHOTOS = BATCH_IMAGE_COUNT * MAX_BATCHES
+
     val STOP_WORDS =
       setOf(
         "di", "ke", "dari", "yang", "dan", "waktu", "saat", "kita", "aku", "kamu",
@@ -533,21 +725,30 @@ class EvoriaSearchEngine(
 
     val SEMANTIC_SYNONYMS: Map<String, List<String>> =
       mapOf(
-        "pantai" to listOf("laut", "ombak", "pasir", "kapal", "ferry", "danau", "pulau", "samudra", "dermaga", "pesisir"),
-        "laut" to listOf("pantai", "ombak", "kapal", "ferry", "danau", "air", "pulau", "dermaga"),
+        "pantai" to listOf("laut", "ombak", "pasir", "kapal", "ferry", "danau", "pulau", "samudra", "dermaga", "pesisir", "beach"),
+        "laut" to listOf("pantai", "ombak", "kapal", "ferry", "danau", "air", "pulau", "dermaga", "sea", "ocean"),
         "sunset" to listOf("senja", "sore", "jingga", "matahari", "langit"),
         "senja" to listOf("sunset", "sore", "jingga", "matahari", "maghrib"),
         "kopi" to listOf("kafe", "coffee", "latte", "espresso", "teh", "nongkrong", "kuliner", "sarapan"),
-        "kafe" to listOf("kopi", "coffee", "restoran", "kuliner", "makan"),
-        "makan" to listOf("kuliner", "kafe", "kopi", "malam", "jajan", "masak"),
-        "kuliner" to listOf("makan", "kopi", "kafe", "jajan", "roti", "kue"),
-        "malam" to listOf("bintang", "bulan", "gelap", "lampu", "kota", "tenang"),
-        "alam" to listOf("gunung", "bukit", "hutan", "pohon", "danau", "pantai", "hijau", "taman"),
-        "gunung" to listOf("bukit", "alam", "pendakian", "kabut", "puncak"),
-        "hujan" to listOf("gerimis", "mendung", "payung", "dingin", "teras"),
-        "berdua" to listOf("kita", "pasangan", "selfie", "swafoto", "shared", "bersama", "kencan", "date"),
-        "selfie" to listOf("swafoto", "wajah", "momen", "berdua", "senyum"),
-        "liburan" to listOf("jalan", "trip", "wisata", "pantai", "kapal", "danau", "gunung"),
+        "kafe" to listOf("kopi", "coffee", "restoran", "kuliner", "makan", "cafe"),
+        "makan" to listOf("kuliner", "kafe", "kopi", "malam", "jajan", "masak", "food", "makanan"),
+        "makanan" to listOf("makan", "kuliner", "kue", "roti", "kafe", "restoran", "jajan", "food"),
+        "kuliner" to listOf("makan", "kopi", "kafe", "jajan", "roti", "kue", "food"),
+        "malam" to listOf("bintang", "bulan", "gelap", "lampu", "kota", "tenang", "night"),
+        "alam" to listOf("gunung", "bukit", "hutan", "pohon", "danau", "pantai", "hijau", "taman", "nature"),
+        "gunung" to listOf("bukit", "alam", "pendakian", "kabut", "puncak", "mountain"),
+        "hujan" to listOf("gerimis", "mendung", "payung", "dingin", "teras", "rain"),
+        "berdua" to listOf("kita", "pasangan", "selfie", "swafoto", "shared", "bersama", "kencan", "date", "couple"),
+        "selfie" to listOf("swafoto", "wajah", "momen", "berdua", "senyum", "portrait"),
+        "liburan" to listOf("jalan", "trip", "wisata", "pantai", "kapal", "danau", "gunung", "holiday"),
+        "kucing" to listOf("cat", "hewan", "peliharaan", "lucu", "bulu"),
+        "bunga" to listOf("flower", "buket", "mawar", "taman", "hadiah"),
+        "ulang" to listOf("ultah", "birthday", "kue", "lilin", "perayaan"),
+        "ultah" to listOf("ulang tahun", "birthday", "kue", "lilin", "hadiah"),
+        "keluarga" to listOf("rumah", "orang tua", "family", "lebaran", "kumpul"),
+        "teman" to listOf("sahabat", "nongkrong", "friend", "bareng", "grup"),
+        "motor" to listOf("jalan", "helm", "riding", "touring", "kendaraan"),
+        "mobil" to listOf("jalan", "trip", "setir", "kendaraan", "car"),
       )
   }
 }

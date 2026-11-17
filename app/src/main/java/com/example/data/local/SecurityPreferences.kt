@@ -162,13 +162,23 @@ class SecurityPreferences(private val context: Context) {
     val PROFILE_BANNER_TYPE = stringPreferencesKey("profile_banner_type")
   }
 
+  fun readInitialLockSnapshotSync(): Pair<Boolean, Boolean> {
+    val enabled = syncPrefs.getBoolean("app_lock_enabled_sync", false)
+    val hasPin = syncPrefs.getBoolean("has_pin_sync", false)
+    return enabled to hasPin
+  }
+
   val securitySettingsFlow: Flow<SecuritySettings> =
     context.evoriaDataStore.data.map { prefs ->
       val bgFromStore = prefs[Keys.LAST_BACKGROUND] ?: 0L
       val bgFromSync = syncPrefs.getLong("last_background_sync", 0L)
+      val pinInStore = !prefs[Keys.PIN_HASH].isNullOrBlank() && !prefs[Keys.PIN_SALT].isNullOrBlank()
+      val hasPin = pinInStore || syncPrefs.getBoolean("has_pin_sync", false)
+      val lockEnabled =
+        prefs[Keys.APP_LOCK_ENABLED] ?: syncPrefs.getBoolean("app_lock_enabled_sync", false)
       SecuritySettings(
-        appLockEnabled = prefs[Keys.APP_LOCK_ENABLED] ?: false,
-        hasPinConfigured = !prefs[Keys.PIN_HASH].isNullOrBlank() && !prefs[Keys.PIN_SALT].isNullOrBlank(),
+        appLockEnabled = lockEnabled && hasPin,
+        hasPinConfigured = hasPin,
         preferredMethod =
           runCatching { LockMethod.valueOf(prefs[Keys.PREFERRED_LOCK_METHOD] ?: "PIN") }
             .getOrDefault(LockMethod.PIN),
@@ -361,8 +371,9 @@ class SecurityPreferences(private val context: Context) {
     context.evoriaDataStore.edit { it[Keys.AUTO_LOCK_TIMEOUT] = timeout.name }
   }
 
-  fun recordBackgroundTimestampSync(nowMillis: Long = System.currentTimeMillis()) {
+  fun recordBackgroundTimestampSync(nowMillis: Long = System.currentTimeMillis()): Long {
     syncPrefs.edit().putLong("last_background_sync", nowMillis).commit()
+    return nowMillis
   }
 
   suspend fun recordBackgroundTimestamp(nowMillis: Long = System.currentTimeMillis()) {

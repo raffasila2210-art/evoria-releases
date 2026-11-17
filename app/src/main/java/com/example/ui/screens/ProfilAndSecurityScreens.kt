@@ -148,9 +148,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.remote.SharedMusicDto
+import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
+import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
@@ -1611,7 +1615,16 @@ private fun QrCodeCameraScannerDialog(
   val lifecycleOwner = LocalLifecycleOwner.current
   val tokens = LocalEvoriaTokens.current
   val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-  val reader = remember { MultiFormatReader() }
+  val reader = remember {
+    MultiFormatReader().apply {
+      setHints(
+        mapOf(
+          DecodeHintType.TRY_HARDER to true,
+          DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+        )
+      )
+    }
+  }
   var handled by remember { mutableStateOf(false) }
 
   DisposableEffect(Unit) {
@@ -1633,6 +1646,7 @@ private fun QrCodeCameraScannerDialog(
             val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
             cameraProviderFuture.addListener(
               {
+                if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return@addListener
                 val cameraProvider = runCatching { cameraProviderFuture.get() }.getOrNull() ?: return@addListener
                 val preview = CameraPreview.Builder().build().also {
                   it.setSurfaceProvider(previewView.surfaceProvider)
@@ -1646,24 +1660,50 @@ private fun QrCodeCameraScannerDialog(
                   try {
                     if (!handled) {
                       val plane = imageProxy.planes.firstOrNull()
-                      if (plane != null) {
+                      val width = imageProxy.width
+                      val height = imageProxy.height
+                      if (plane != null && width > 0 && height > 0) {
                         val buffer = plane.buffer
-                        val bytes = ByteArray(buffer.remaining())
-                        buffer.get(bytes)
-                        val source =
-                          PlanarYUVLuminanceSource(
-                            bytes,
-                            imageProxy.width,
-                            imageProxy.height,
-                            0,
-                            0,
-                            imageProxy.width,
-                            imageProxy.height,
-                            false,
-                          )
-                        val binary = BinaryBitmap(HybridBinarizer(source))
-                        val decoded = runCatching { reader.decode(binary).text }.getOrNull()
-                        val code = QrCodeGenerator.extractInviteCode(decoded)
+                        val rowStride = plane.rowStride
+                        val pixelStride = plane.pixelStride
+                        val yBytes = ByteArray(width * height)
+                        if (rowStride == width && pixelStride == 1) {
+                          buffer.get(yBytes, 0, yBytes.size.coerceAtMost(buffer.remaining()))
+                        } else {
+                          val rowBuf = ByteArray(rowStride)
+                          for (row in 0 until height) {
+                            val toRead = minOf(rowStride, buffer.remaining())
+                            if (toRead <= 0) break
+                            buffer.get(rowBuf, 0, toRead)
+                            for (col in 0 until width) {
+                              val srcIdx = col * pixelStride
+                              if (srcIdx < toRead) yBytes[row * width + col] = rowBuf[srcIdx]
+                            }
+                          }
+                        }
+
+                        var decodedText =
+                          runCatching {
+                            val src = PlanarYUVLuminanceSource(yBytes, width, height, 0, 0, width, height, false)
+                            reader.decodeWithState(BinaryBitmap(HybridBinarizer(src))).text
+                          }.getOrNull()
+
+                        if (decodedText == null) {
+                          // Retry 90-degree rotated plane so QR works regardless of camera sensor orientation
+                          val rotated = ByteArray(width * height)
+                          for (y in 0 until height) {
+                            for (x in 0 until width) {
+                              rotated[x * height + height - y - 1] = yBytes[x + y * width]
+                            }
+                          }
+                          decodedText =
+                            runCatching {
+                              val srcRot = PlanarYUVLuminanceSource(rotated, height, width, 0, 0, height, width, false)
+                              reader.decodeWithState(BinaryBitmap(HybridBinarizer(srcRot))).text
+                            }.getOrNull()
+                        }
+
+                        val code = QrCodeGenerator.extractInviteCode(decodedText)
                         if (code != null) {
                           handled = true
                           ContextCompat.getMainExecutor(ctx).execute {
@@ -2250,7 +2290,8 @@ fun AppLockScreen(
     }
   }
 
-  var biometricAutoTriggered by rememberSaveable { mutableStateOf(false) }
+  var biometricAutoTriggered by remember { mutableStateOf(false) }
+  val appLockLifecycleOwner = LocalLifecycleOwner.current
 
   fun launchBiometricIfAvailable() {
     val activity = context as? FragmentActivity ?: return
@@ -2270,10 +2311,21 @@ fun AppLockScreen(
     )
   }
 
-  LaunchedEffect(securitySettings.preferredMethod, capabilities.canUseBiometric) {
+  DisposableEffect(appLockLifecycleOwner) {
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_STOP) {
+        // Allow re-triggering biometric prompt when user leaves and returns while still locked
+        biometricAutoTriggered = false
+      }
+    }
+    appLockLifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { appLockLifecycleOwner.lifecycle.removeObserver(observer) }
+  }
+
+  LaunchedEffect(securitySettings.preferredMethod, capabilities.canUseBiometric, biometricAutoTriggered) {
     if (!biometricAutoTriggered && securitySettings.preferredMethod != LockMethod.PIN && capabilities.canUseBiometric) {
       biometricAutoTriggered = true
-      delay(180L)
+      delay(200L)
       launchBiometricIfAvailable()
     }
   }

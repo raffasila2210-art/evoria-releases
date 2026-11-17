@@ -271,8 +271,10 @@ class EvoriaViewModel(
 
   val playerState: StateFlow<MusicPlayerState> = playerManager.state
 
+  private val initialSyncLock = prefs.readInitialLockSnapshotSync()
+
   // Transient UI states
-  private val _isLocked = MutableStateFlow(false)
+  private val _isLocked = MutableStateFlow(initialSyncLock.first && initialSyncLock.second)
   val isLocked: StateFlow<Boolean> = _isLocked.asStateFlow()
 
   private val _bloomMessage = MutableStateFlow<String?>(null)

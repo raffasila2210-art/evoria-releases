@@ -9,6 +9,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -68,6 +70,7 @@ import com.example.ui.matchLocalAudioToTracks
 import com.example.ui.screens.AboutEvoriaScreen
 import com.example.ui.screens.AddOrEditMemoryScreen
 import com.example.ui.screens.AppearanceSettingsScreen
+import com.example.ui.screens.FullscreenPhotoViewer
 import com.example.ui.screens.JelajahScreen
 import com.example.ui.screens.KenanganScreen
 import com.example.ui.screens.MusicAndSoundtrackScreen
@@ -913,12 +916,13 @@ class EvoriaLogicTest {
       }
     }
 
+    composeRule.onNodeWithTag("music_lazy_column").performScrollToNode(hasTestTag("track_row_trk_yt_ok"))
     composeRule.onNodeWithTag("track_row_trk_yt_ok").assertExists().performClick()
     composeRule.waitForIdle()
     assertEquals(listOf("trk_yt_ok"), playedIds)
     assertTrue(openedFullPlayer)
 
-    composeRule.onNodeWithTag("music_lazy_column").performScrollToIndex(3)
+    composeRule.onNodeWithTag("music_lazy_column").performScrollToNode(hasTestTag("youtube_match_track_btn_trk_yt_wait"))
     composeRule.waitForIdle()
     composeRule.onNodeWithTag("youtube_match_track_btn_trk_yt_wait").assertExists().performClick()
     composeRule.waitForIdle()
@@ -2140,9 +2144,9 @@ class EvoriaLogicTest {
     assertEquals(0xFF4F46E5L, prefs.userPrefsFlow.first().customAccentHex)
 
     // Choosing a named preset clears custom color cleanly
-    prefs.setAccentPreset(EvoriaAccentPreset.OCEAN)
+    prefs.setAccentPreset(EvoriaAccentPreset.OCEAN_DUSK)
     assertNull(prefs.userPrefsFlow.first().customAccentHex)
-    assertEquals(EvoriaAccentPreset.OCEAN, prefs.userPrefsFlow.first().accentPreset)
+    assertEquals(EvoriaAccentPreset.OCEAN_DUSK, prefs.userPrefsFlow.first().accentPreset)
 
     // Synchronous background timestamp mirror updates immediately
     val stamped = prefs.recordBackgroundTimestampSync(nowMillis = 999_888L)
@@ -2271,8 +2275,381 @@ class EvoriaLogicTest {
 
     composeRule.onNodeWithTag("tema_custom_color_card").assertExists()
     composeRule.onNodeWithText("Palet Warna Bebas").assertExists()
-    composeRule.onNodeWithTag("tema_apply_custom_hex").performScrollTo().performClick()
+    composeRule.onNodeWithTag("tema_custom_color_apply").performScrollTo().performClick()
     composeRule.waitForIdle()
     assertNotNull(appliedHex)
+  }
+
+  @Test
+  fun securityPreferences_coldStartSyncSnapshot_enforcesAppLockImmediatelyBeforeDataStore() = runBlocking {
+    val prefs = SecurityPreferences(context)
+    prefs.clearPinAndDisableLock()
+    val beforePin = SecurityPreferences(context).readInitialLockSnapshotSync()
+    assertEquals(false to false, beforePin)
+
+    prefs.configurePin("135790")
+    // Simulating cold restart with a brand new SecurityPreferences instance
+    val freshInstance = SecurityPreferences(context)
+    val coldSnapshot = freshInstance.readInitialLockSnapshotSync()
+    assertEquals(true to true, coldSnapshot)
+    assertTrue(freshInstance.securitySettingsFlow.first().appLockEnabled)
+
+    prefs.clearPinAndDisableLock()
+    assertEquals(false to false, SecurityPreferences(context).readInitialLockSnapshotSync())
+  }
+
+  @Test
+  fun searchEngine_localMetadataSearch_matchesAlbumTitleAndExpandedSynonyms() {
+    val engine = EvoriaSearchEngine()
+    val albumTitles = mapOf("alb_kucing" to "Liburan Pantai Anyer")
+    val mAlbum =
+      LocalMemoryEntity(
+        id = "m_alb",
+        ownerUid = "u1",
+        albumId = "alb_kucing",
+        title = "Galeri Kita",
+        caption = "",
+        tagsCsv = "galeri",
+        mediaType = "photo",
+        mediaUri = "file:///tmp/a.jpg",
+        memoryDateMillis = 100L,
+        createdAtMillis = 100L,
+        updatedAtMillis = 100L,
+      )
+    val mSyn =
+      LocalMemoryEntity(
+        id = "m_syn",
+        ownerUid = "u1",
+        title = "Anak Bulu Lucu",
+        caption = "Peliharaan kesayangan di rumah",
+        tagsCsv = "",
+        mediaType = "photo",
+        mediaUri = "file:///tmp/b.jpg",
+        memoryDateMillis = 90L,
+        createdAtMillis = 90L,
+        updatedAtMillis = 90L,
+      )
+
+    assertEquals(
+      listOf("m_alb"),
+      engine.localMetadataSearch("Anyer", listOf(mAlbum, mSyn), albumTitles),
+    )
+    assertEquals(
+      listOf("m_syn"),
+      engine.localMetadataSearch("kucing", listOf(mAlbum, mSyn), albumTitles),
+    )
+  }
+
+  @Test
+  fun kenanganScreen_createKenanganDialog_requiresAtLeastTwoAlbumsAndCombinesSelection() {
+    var createdTitle: String? = null
+    var createdAlbumIds: List<String> = emptyList()
+    val alb1 = LocalAlbumEntity("alb_1", "u1", "Bandung", "", null, "private", null, 100L, 100L)
+    val alb2 = LocalAlbumEntity("alb_2", "u1", "Yogyakarta", "", null, "shared", null, 200L, 200L)
+
+    composeRule.setContent {
+      EvoriaTheme {
+        KenanganScreen(
+          albums = listOf(alb1, alb2),
+          memories = emptyList(),
+          kenanganCollections = emptyList(),
+          favoritesOnlyDefault = false,
+          onConsumeFavoritesDefault = {},
+          onOpenAlbum = {},
+          onOpenKenangan = {},
+          onCreateKenangan = { title, _, albumIds, _ ->
+            createdTitle = title
+            createdAlbumIds = albumIds
+          },
+          onDeleteKenangan = {},
+          onOpenMemory = {},
+          onOpenAddMemory = {},
+          onImportGalleryPhotos = {},
+          onSaveAlbum = { _, _, _, _, _, _, _ -> },
+          onToggleFavorite = {},
+          onDeleteMemories = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("kenangan_fab_add").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("fab_action_create_kenangan").performClick()
+    composeRule.waitForIdle()
+
+    // With 0 or 1 album checked, Gabungkan remains disabled
+    composeRule.onNodeWithTag("confirm_create_kenangan_button").assertIsNotEnabled()
+    composeRule.onNodeWithTag("kenangan_album_check_alb_1").performScrollTo().performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("confirm_create_kenangan_button").assertIsNotEnabled()
+
+    // Selecting the 2nd album enables Gabungkan and saves both album IDs
+    composeRule.onNodeWithTag("create_kenangan_title_input").performScrollTo().performTextReplacement("Perjalanan Jawa")
+    composeRule.onNodeWithTag("kenangan_album_check_alb_2").performScrollTo().performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("confirm_create_kenangan_button").assertIsEnabled().performClick()
+    composeRule.waitForIdle()
+
+    assertEquals("Perjalanan Jawa", createdTitle)
+    assertEquals(setOf("alb_1", "alb_2"), createdAlbumIds.toSet())
+  }
+
+  @Test
+  fun musicScreen_sendPlaylistToPartnerButton_invokesCallbackWithPlaylistAndTracks() {
+    var sentPlaylistId: String? = null
+    var sentTrackIds: List<String> = emptyList()
+    val pl = PlaylistEntity("pl_partner_1", "Kita Berdua", "Soundtrack senja", null, 100L)
+    val trk = TrackEntity("trk_p_1", "pl_partner_1", "Monokrom", "Tulus", "file:///tmp/t.mp3", 210_000L, 0)
+
+    composeRule.setContent {
+      EvoriaTheme {
+        MusicAndSoundtrackScreen(
+          playlists = listOf(pl),
+          tracks = listOf(trk),
+          albums = emptyList(),
+          playerState = MusicPlayerState(),
+          hasConnectedPartner = true,
+          onCreatePlaylist = { _, _, _ -> },
+          onAddAudioTrack = { _, _, _, _ -> },
+          onMoveTrackOrder = { _, _, _ -> },
+          onDeleteTrack = {},
+          onPlayTrack = { _, _ -> },
+          onSendPlaylistToPartner = { playlist, list ->
+            sentPlaylistId = playlist.id
+            sentTrackIds = list.map { it.id }
+          },
+          onOpenFullPlayer = {},
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("music_lazy_column").performScrollToNode(hasTestTag("send_playlist_partner_button"))
+    composeRule.onNodeWithTag("send_playlist_partner_button").performClick()
+    composeRule.waitForIdle()
+
+    assertEquals("pl_partner_1", sentPlaylistId)
+    assertEquals(listOf("trk_p_1"), sentTrackIds)
+  }
+
+  @Test
+  fun fullscreenPhotoViewer_displaysRincianButtonAndConfirmsDelete() {
+    var deleted = false
+    val mem =
+      LocalMemoryEntity(
+        id = "mem_fs_1",
+        ownerUid = "u1",
+        title = "Sore di Teras",
+        mediaType = "photo",
+        mediaUri = "",
+        memoryDateMillis = 1_700_000_000_000L,
+        createdAtMillis = 1_700_000_000_000L,
+        updatedAtMillis = 1_700_000_000_000L,
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        FullscreenPhotoViewer(
+          mediaUri = "",
+          title = mem.title,
+          memory = mem,
+          albumTitle = "Rumah",
+          onDelete = { deleted = true },
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("fullscreen_photo_back").assertExists()
+    composeRule.onNodeWithText("Rincian").assertExists()
+    composeRule.onNodeWithTag("memory_rincian_button").assertExists()
+
+    // Pressing bottom delete opens confirmation dialog first
+    composeRule.onNodeWithTag("memory_bar_delete").performClick()
+    composeRule.waitForIdle()
+    assertFalse(deleted)
+    composeRule.onNodeWithText("Hapus Foto Ini?").assertExists()
+    composeRule.onNodeWithText("Hapus").performClick()
+    composeRule.waitForIdle()
+    assertTrue(deleted)
+  }
+
+  @Test
+  fun kenanganGaleri_longPressAndDragSelectsPhotoRangeAndDeletes() {
+    var deletedBatch = emptyList<LocalMemoryEntity>()
+    val now = 1_700_000_000_000L
+    val m1 =
+      LocalMemoryEntity(
+        id = "m_drag_1",
+        ownerUid = "u1",
+        albumId = "alb_d",
+        title = "Foto 1",
+        mediaType = "story",
+        story = "Momen satu",
+        visibility = "private",
+        memoryDateMillis = now + 4_000L,
+        createdAtMillis = now + 4_000L,
+        updatedAtMillis = now + 4_000L,
+      )
+    val m2 =
+      LocalMemoryEntity(
+        id = "m_drag_2",
+        ownerUid = "u1",
+        albumId = "alb_d",
+        title = "Foto 2",
+        mediaType = "story",
+        story = "Momen dua",
+        visibility = "private",
+        memoryDateMillis = now + 3_000L,
+        createdAtMillis = now + 3_000L,
+        updatedAtMillis = now + 3_000L,
+      )
+    val m3 =
+      LocalMemoryEntity(
+        id = "m_drag_3",
+        ownerUid = "u1",
+        albumId = "alb_d",
+        title = "Foto 3",
+        mediaType = "story",
+        story = "Momen tiga",
+        visibility = "private",
+        memoryDateMillis = now + 2_000L,
+        createdAtMillis = now + 2_000L,
+        updatedAtMillis = now + 2_000L,
+      )
+    val m4 =
+      LocalMemoryEntity(
+        id = "m_drag_4",
+        ownerUid = "u1",
+        albumId = "alb_d",
+        title = "Foto 4",
+        mediaType = "story",
+        story = "Momen empat",
+        visibility = "private",
+        memoryDateMillis = now + 1_000L,
+        createdAtMillis = now + 1_000L,
+        updatedAtMillis = now + 1_000L,
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        KenanganScreen(
+          albums = emptyList(),
+          memories = listOf(m1, m2, m3, m4),
+          kenanganCollections = emptyList(),
+          onOpenAlbum = {},
+          onOpenMemory = {},
+          onOpenAddMemory = {},
+          onImportGalleryPhotos = {},
+          onSaveAlbum = { _, _, _, _, _, _, _ -> },
+          onToggleFavorite = {},
+          onDeleteMemories = { deletedBatch = it },
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("kenangan_subtab_galeri").performClick()
+    composeRule.waitForIdle()
+
+    val gridTopLeft = composeRule.onNodeWithTag("galeri_grid").fetchSemanticsNode().boundsInRoot.topLeft
+    val p1 = composeRule.onNodeWithTag("memory_card_m_drag_1").fetchSemanticsNode().boundsInRoot.center - gridTopLeft
+    val p2 = composeRule.onNodeWithTag("memory_card_m_drag_2").fetchSemanticsNode().boundsInRoot.center - gridTopLeft
+    val p3 = composeRule.onNodeWithTag("memory_card_m_drag_3").fetchSemanticsNode().boundsInRoot.center - gridTopLeft
+
+    // Hold on tile 1 past long-press timeout, then drag across tile 2 and tile 3 without lifting
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput {
+      down(p1)
+    }
+    composeRule.mainClock.advanceTimeBy(450L)
+    composeRule.waitForIdle()
+    composeRule.onNodeWithText("1 dipilih").assertExists()
+
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput {
+      moveTo(p2)
+    }
+    composeRule.mainClock.advanceTimeBy(32L)
+    composeRule.waitForIdle()
+
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput {
+      moveTo(p3)
+    }
+    composeRule.mainClock.advanceTimeBy(32L)
+    composeRule.waitForIdle()
+
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput {
+      up()
+    }
+    composeRule.waitForIdle()
+    composeRule.onNodeWithText("3 dipilih").assertExists()
+
+    // Confirm batch delete deletes the exact dragged range (1..3, not 4)
+    composeRule.onNodeWithTag("kenangan_multiselect_delete").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("kenangan_confirm_batch_delete").performClick()
+    composeRule.waitForIdle()
+    assertEquals(setOf("m_drag_1", "m_drag_2", "m_drag_3"), deletedBatch.map { it.id }.toSet())
+  }
+
+  @Test
+  fun kenanganGaleri_multiSelectModeImmediateHorizontalDragSelectsRange() {
+    val now = 1_700_000_000_000L
+    val items =
+      (1..4).map { idx ->
+        LocalMemoryEntity(
+          id = "m_hdrg_$idx",
+          ownerUid = "u1",
+          albumId = "alb_h",
+          title = "Foto $idx",
+          mediaType = "story",
+          story = "Item $idx",
+          visibility = "private",
+          memoryDateMillis = now + (5 - idx) * 1_000L,
+          createdAtMillis = now + (5 - idx) * 1_000L,
+          updatedAtMillis = now + (5 - idx) * 1_000L,
+        )
+      }
+
+    composeRule.setContent {
+      EvoriaTheme {
+        KenanganScreen(
+          albums = emptyList(),
+          memories = items,
+          kenanganCollections = emptyList(),
+          onOpenAlbum = {},
+          onOpenMemory = {},
+          onOpenAddMemory = {},
+          onImportGalleryPhotos = {},
+          onSaveAlbum = { _, _, _, _, _, _, _ -> },
+          onToggleFavorite = {},
+          onDeleteMemories = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("kenangan_subtab_galeri").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("kenangan_multiselect_toggle").performClick()
+    composeRule.waitForIdle()
+
+    val gridTopLeft = composeRule.onNodeWithTag("galeri_grid").fetchSemanticsNode().boundsInRoot.topLeft
+    val p1 = composeRule.onNodeWithTag("memory_card_m_hdrg_1").fetchSemanticsNode().boundsInRoot.center - gridTopLeft
+    val p2 = composeRule.onNodeWithTag("memory_card_m_hdrg_2").fetchSemanticsNode().boundsInRoot.center - gridTopLeft
+    val p3 = composeRule.onNodeWithTag("memory_card_m_hdrg_3").fetchSemanticsNode().boundsInRoot.center - gridTopLeft
+
+    // Immediate horizontal drag (without 400ms hold) when already in multi-select mode
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput { down(p1) }
+    composeRule.mainClock.advanceTimeBy(16L)
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput { moveTo(p2) }
+    composeRule.mainClock.advanceTimeBy(16L)
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput { moveTo(p3) }
+    composeRule.mainClock.advanceTimeBy(16L)
+    composeRule.onNodeWithTag("galeri_grid").performTouchInput { up() }
+    composeRule.waitForIdle()
+    val summaryTexts =
+      composeRule
+        .onAllNodes(hasText("dipilih", substring = true))
+        .fetchSemanticsNodes()
+        .map { it.config.toString() }
+    assertTrue("Expected '3 dipilih' but found: $summaryTexts", summaryTexts.any { it.contains("3 dipilih") })
   }
 }

@@ -78,6 +78,7 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
@@ -116,12 +117,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -1548,6 +1552,7 @@ fun MusicAndSoundtrackScreen(
   matchingYouTubePlaylistId: String? = null,
   isYouTubeApiConfigured: Boolean = YouTubeDataApiClient.isApiKeyConfigured(),
   youtubeDirectSearchState: YouTubeDirectSearchUiState = YouTubeDirectSearchUiState.Idle,
+  hasConnectedPartner: Boolean = false,
   onSearchYouTubeDirect: (String) -> Unit = {},
   onClearYouTubeDirectSearch: () -> Unit = {},
   onPlayYouTubeMatchDirectly: (match: YouTubeTrackMatch, preferredPlaylistId: String?, onReadyToOpenPlayer: () -> Unit) -> Unit = { _, _, _ -> },
@@ -1563,6 +1568,8 @@ fun MusicAndSoundtrackScreen(
   onMoveTrackOrder: (playlistTracks: List<TrackEntity>, fromIndex: Int, toIndex: Int) -> Unit,
   onDeleteTrack: (String) -> Unit,
   onPlayTrack: (playlistTracks: List<TrackEntity>, trackId: String) -> Unit,
+  onSendPlaylistToPartner: (PlaylistEntity, List<TrackEntity>) -> Unit = { _, _ -> },
+  onSendTrackToPartner: (TrackEntity) -> Unit = {},
   onOpenFullPlayer: () -> Unit,
   onBack: () -> Unit,
 ) {
@@ -2192,6 +2199,25 @@ fun MusicAndSoundtrackScreen(
                     }
                   }
                 }
+                if (playlistTracks.isNotEmpty()) {
+                  Spacer(modifier = Modifier.height(10.dp))
+                  OutlinedButton(
+                    onClick = { onSendPlaylistToPartner(activePlaylist, playlistTracks) },
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(1.dp, SpotifyEmerald.copy(alpha = if (hasConnectedPartner) 0.65f else 0.35f)),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("send_playlist_partner_button"),
+                  ) {
+                    Icon(Icons.Filled.Send, contentDescription = null, tint = SpotifyEmerald, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                      text = if (hasConnectedPartner) "Kirim Playlist ke Pasangan" else "Kirim Playlist (Hubungkan Pasangan)",
+                      color = SpotifyTextPrimary,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                  }
+                }
               }
             }
           }
@@ -2414,6 +2440,16 @@ fun MusicAndSoundtrackScreen(
                           },
                         )
                       }
+                      DropdownMenuItem(
+                        leadingIcon = {
+                          Icon(Icons.Filled.Send, contentDescription = null, tint = SpotifyEmerald)
+                        },
+                        text = { Text("Kirim Lagu ke Pasangan") },
+                        onClick = {
+                          trackMenuExpanded = false
+                          onSendTrackToPartner(track)
+                        },
+                      )
                       DropdownMenuItem(
                         leadingIcon = {
                           Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
@@ -2707,6 +2743,10 @@ internal fun buildYouTubeMobileWatchBridgeJs(): String =
   (function() {
     if (window.__evoriaWatchInit) return;
     window.__evoriaWatchInit = true;
+    try {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: function() { return false; } });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: function() { return 'visible'; } });
+    } catch (e) {}
     var style = document.createElement('style');
     style.textContent = 'body, html { background: #0D0D0F !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; } ytm-mobile-topbar-renderer, header, #header-bar, ytm-item-section-renderer, ytm-comment-section-header-renderer, ytm-engagement-panel-section-list-renderer, .ytm-autonav-bar, ytm-upsell-dialog-renderer, tp-yt-paper-dialog, .open-in-app-banner, ytm-app-upsell-dialog-renderer, ytm-promoted-sparkles-web-renderer { display: none !important; } #player-container-id, .player-container, #movie_player, video { width: 100vw !important; height: 100vh !important; max-height: 100vh !important; position: fixed !important; top: 0 !important; left: 0 !important; z-index: 9999 !important; background: #0D0D0F !important; object-fit: contain !important; }';
     (document.head || document.documentElement).appendChild(style);
@@ -2789,6 +2829,12 @@ internal fun buildYouTubeIFrameHtml(
     </head>
     <body>
       <div id="player"></div>
+      <script>
+        try {
+          Object.defineProperty(document, 'hidden', { configurable: true, get: function() { return false; } });
+          Object.defineProperty(document, 'visibilityState', { configurable: true, get: function() { return 'visible'; } });
+        } catch (e) {}
+      </script>
       <script src="https://www.youtube.com/iframe_api"></script>
       <script>
         var ytPlayer = null;
@@ -2903,8 +2949,15 @@ internal fun buildYouTubeIFrameHtml(
   """.trimIndent()
 }
 
+private class EvoriaBackgroundWebView(context: Context) : WebView(context) {
+  override fun onWindowVisibilityChanged(visibility: Int) {
+    // Keep audio & JS timers running even when offscreen or app moves to background
+    super.onWindowVisibilityChanged(android.view.View.VISIBLE)
+  }
+}
+
 @Composable
-private fun YouTubeFullTrackEmbedPlayer(
+fun YouTubeFullTrackEmbedPlayer(
   videoId: String,
   commands: Flow<YouTubePlayerCommand>,
   onPlaybackUpdate: (isPlaying: Boolean, positionMs: Long, durationMs: Long) -> Unit,
@@ -2994,7 +3047,7 @@ private fun YouTubeFullTrackEmbedPlayer(
 
   AndroidView(
     factory = { ctx ->
-      WebView(ctx).apply {
+      EvoriaBackgroundWebView(ctx).apply {
         val webView = this
         val rawUa = settings.userAgentString.orEmpty()
         settings.userAgentString =
@@ -3118,6 +3171,8 @@ fun FullMusicPlayerScreen(
   onYouTubePlaybackUpdate: (isPlaying: Boolean, positionMs: Long, durationMs: Long) -> Unit = { _, _, _ -> },
   onYouTubeVideoEnded: () -> Unit = {},
   onYouTubePlayerError: (String) -> Unit = {},
+  hostPersistentYouTubeOverlay: Boolean = false,
+  onYouTubeSlotBounds: (Rect?) -> Unit = {},
   onLeavingYouTubePlayer: () -> Unit = {},
   onTogglePlayPause: () -> Unit,
   onSeekTo: (Long) -> Unit,
@@ -3127,7 +3182,10 @@ fun FullMusicPlayerScreen(
 ) {
   BackHandler(onBack = onBack)
   DisposableEffect(Unit) {
-    onDispose { onLeavingYouTubePlayer() }
+    onDispose {
+      onYouTubeSlotBounds(null)
+      onLeavingYouTubePlayer()
+    }
   }
   val tokens = LocalEvoriaTokens.current
   val track = playerState.currentTrack
@@ -3170,7 +3228,7 @@ fun FullMusicPlayerScreen(
 
       Spacer(modifier = Modifier.weight(0.5f))
 
-      // Visible YouTube Full Player OR Square Album Poster Artwork
+      // Visible YouTube Full Player Slot OR Square Album Poster Artwork
       Surface(
         shape = RoundedCornerShape(18.dp),
         color = SpotifyCardBg,
@@ -3180,14 +3238,30 @@ fun FullMusicPlayerScreen(
           else Modifier.size(268.dp),
       ) {
         if (isYouTubePlayingMode) {
-          YouTubeFullTrackEmbedPlayer(
-            videoId = playerState.activeYouTubeVideoId!!,
-            commands = youtubeCommands,
-            onPlaybackUpdate = onYouTubePlaybackUpdate,
-            onEnded = onYouTubeVideoEnded,
-            onError = onYouTubePlayerError,
-            modifier = Modifier.fillMaxSize(),
-          )
+          if (hostPersistentYouTubeOverlay) {
+            Box(
+              modifier =
+                Modifier
+                  .fillMaxSize()
+                  .onGloballyPositioned { coords -> onYouTubeSlotBounds(coords.boundsInRoot()) },
+              contentAlignment = Alignment.Center,
+            ) {
+              CircularProgressIndicator(
+                color = SpotifyEmerald,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(28.dp),
+              )
+            }
+          } else {
+            YouTubeFullTrackEmbedPlayer(
+              videoId = playerState.activeYouTubeVideoId!!,
+              commands = youtubeCommands,
+              onPlaybackUpdate = onYouTubePlaybackUpdate,
+              onEnded = onYouTubeVideoEnded,
+              onError = onYouTubePlayerError,
+              modifier = Modifier.fillMaxSize(),
+            )
+          }
         } else {
           Box(
             modifier =
