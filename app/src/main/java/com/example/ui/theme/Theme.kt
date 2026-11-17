@@ -146,6 +146,7 @@ val EvoriaShapes =
 fun EvoriaTheme(
   themeMode: ThemeMode = ThemeMode.SYSTEM,
   accentPreset: com.example.data.local.EvoriaAccentPreset = com.example.data.local.EvoriaAccentPreset.TERRACOTTA,
+  customAccentHex: Long? = null,
   content: @Composable () -> Unit,
 ) {
   val useDark =
@@ -155,10 +156,29 @@ fun EvoriaTheme(
       ThemeMode.DARK -> true
     }
 
-  val customPrimary =
-    Color(if (useDark) accentPreset.darkPrimaryHex else accentPreset.lightPrimaryHex)
-  val customPeach =
-    Color(if (useDark) accentPreset.darkPeachHex else accentPreset.lightPeachHex)
+  val customPrimary: Color
+  val customPeach: Color
+  if (customAccentHex != null && customAccentHex != 0L) {
+    val argb = (customAccentHex or 0xFF000000L).toInt()
+    val hsl = FloatArray(3)
+    androidx.core.graphics.ColorUtils.colorToHSL(argb, hsl)
+    val baseHsl = hsl.copyOf()
+    if (useDark) {
+      baseHsl[2] = baseHsl[2].coerceIn(0.55f, 0.78f)
+    } else {
+      baseHsl[2] = baseHsl[2].coerceIn(0.32f, 0.62f)
+    }
+    customPrimary = Color(androidx.core.graphics.ColorUtils.HSLToColor(baseHsl))
+    val softHsl = hsl.copyOf()
+    softHsl[1] = (softHsl[1] * 0.75f).coerceIn(0.20f, 0.85f)
+    softHsl[2] = if (useDark) 0.76f else 0.84f
+    customPeach = Color(androidx.core.graphics.ColorUtils.HSLToColor(softHsl))
+  } else {
+    customPrimary =
+      Color(if (useDark) accentPreset.darkPrimaryHex else accentPreset.lightPrimaryHex)
+    customPeach =
+      Color(if (useDark) accentPreset.darkPeachHex else accentPreset.lightPeachHex)
+  }
 
   val colorScheme =
     (if (useDark) DarkColorScheme else LightColorScheme).copy(

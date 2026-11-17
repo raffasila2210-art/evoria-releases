@@ -22,6 +22,19 @@ interface EvoriaDao {
   @Query("DELETE FROM albums WHERE id = :albumId")
   suspend fun deleteAlbum(albumId: String)
 
+  // --- Kenangan Collections (Multi-Album Compilations) ---
+  @Query("SELECT * FROM kenangan_collections WHERE ownerUid = :uid ORDER BY updatedAtMillis DESC")
+  fun observeKenanganCollections(uid: String): Flow<List<KenanganCollectionEntity>>
+
+  @Query("SELECT * FROM kenangan_collections WHERE ownerUid = :uid ORDER BY updatedAtMillis DESC")
+  suspend fun getKenanganCollectionsSnapshot(uid: String): List<KenanganCollectionEntity>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertKenanganCollection(collection: KenanganCollectionEntity)
+
+  @Query("DELETE FROM kenangan_collections WHERE id = :collectionId")
+  suspend fun deleteKenanganCollection(collectionId: String)
+
   // --- Memories ---
   @Query("SELECT * FROM memories WHERE ownerUid = :uid ORDER BY memoryDateMillis DESC")
   fun observeMemories(uid: String): Flow<List<LocalMemoryEntity>>
@@ -155,6 +168,9 @@ interface EvoriaDao {
   // --- Wipe User Data ---
   @Query("DELETE FROM albums WHERE ownerUid = :uid")
   suspend fun clearUserAlbums(uid: String)
+
+  @Query("DELETE FROM kenangan_collections WHERE ownerUid = :uid")
+  suspend fun clearUserKenanganCollections(uid: String)
 
   @Query("DELETE FROM memories WHERE ownerUid = :uid")
   suspend fun clearUserMemories(uid: String)

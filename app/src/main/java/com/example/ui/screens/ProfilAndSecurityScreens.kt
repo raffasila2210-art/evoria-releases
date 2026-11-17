@@ -6,12 +6,19 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Build
+import android.util.Size
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview as CameraPreview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
@@ -47,11 +54,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
@@ -66,6 +76,7 @@ import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
@@ -74,13 +85,16 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TabletAndroid
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
@@ -94,19 +108,25 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -115,14 +135,26 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.data.remote.SharedMusicDto
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.HybridBinarizer
+import java.util.concurrent.Executors
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import coil.compose.AsyncImage
@@ -150,6 +182,7 @@ import com.example.data.remote.UserProfileDto
 import com.example.security.BiometricHelper
 import com.example.ui.components.EvoriaCard
 import com.example.ui.components.EvoriaFormTextField
+import com.example.ui.components.EvoriaLoopingVideoSurface
 import com.example.ui.components.EvoriaMainTabs
 import com.example.ui.components.EvoriaSanctuaryBackdrop
 import com.example.ui.components.EvoriaSymmetricDialogShell
@@ -165,7 +198,6 @@ import com.example.util.QrCodeGenerator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProfilScreen(
   currentUid: String,
@@ -197,7 +229,10 @@ fun ProfilScreen(
   onOpenSecurity: () -> Unit,
   onOpenBackupStorage: () -> Unit,
   onOpenLiquidGlassShowcase: () -> Unit,
+  onOpenAppearanceSettings: () -> Unit = {},
   onOpenAbout: () -> Unit = {},
+  onPickProfileBanner: (Uri) -> Unit = {},
+  onResetProfileBanner: () -> Unit = {},
   onSignOut: () -> Unit,
 ) {
   val tokens = LocalEvoriaTokens.current
@@ -213,423 +248,528 @@ fun ProfilScreen(
       }
     }
 
-  var showEditProfileDialog by remember { mutableStateOf(false) }
-  var confirmWipeAllData by remember { mutableStateOf(false) }
-  var miniPreviewTab by remember { mutableIntStateOf(4) }
-
-  LazyColumn(
-    modifier = Modifier.fillMaxSize().testTag("profil_lazy_column"),
-    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 120.dp),
-    verticalArrangement = Arrangement.spacedBy(14.dp),
-  ) {
-    item {
-      Text("Profil & Pengaturan", style = MaterialTheme.typography.displayMedium, color = tokens.inkText)
-      Text("Kelola ruang berdua, privasi, keamanan & tampilan.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
-    }
-
-    // Identity + Partner Card with Avatar Upload & Rename
-    item {
-      EvoriaCard(elevated = true) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Box(
-            modifier =
-              Modifier
-                .size(68.dp)
-                .clickable {
-                  avatarPicker.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                  )
-                }
-                .testTag("profil_avatar_picker"),
-          ) {
-            Box(
-              modifier =
-                Modifier
-                  .fillMaxSize()
-                  .clip(CircleShape)
-                  .background(tokens.accentPeach.copy(alpha = 0.35f))
-                  .border(1.5.dp, tokens.primaryTerracotta.copy(alpha = 0.45f), CircleShape),
-              contentAlignment = Alignment.Center,
-            ) {
-              if (!profile?.avatarUrl.isNullOrBlank()) {
-                val avatarReq = rememberThumbnailRequest(profile?.avatarUrl, sizePx = 180)
-                AsyncImage(
-                  model = avatarReq,
-                  contentDescription = "Foto profil $displayName",
-                  contentScale = ContentScale.Crop,
-                  modifier = Modifier.fillMaxSize(),
-                )
-              } else {
-                Text(
-                  text = displayName.take(1).uppercase(),
-                  style = MaterialTheme.typography.headlineMedium,
-                  color = tokens.primaryTerracotta,
-                )
-              }
-            }
-            Surface(
-              color = tokens.primaryTerracotta,
-              shape = CircleShape,
-              border = BorderStroke(1.5.dp, tokens.cardSurface),
-              modifier = Modifier.size(24.dp).align(Alignment.BottomEnd),
-            ) {
-              Box(contentAlignment = Alignment.Center) {
-                Icon(
-                  Icons.Filled.CameraAlt,
-                  contentDescription = "Unggah foto profil",
-                  tint = Color.White,
-                  modifier = Modifier.size(13.dp),
-                )
-              }
-            }
-          }
-
-          Spacer(modifier = Modifier.width(14.dp))
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              displayName,
-              style = MaterialTheme.typography.titleLarge,
-              color = tokens.inkText,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-            if (!profile?.partnerNickname.isNullOrBlank()) {
-              Text(
-                "Sapaan untuk pasangan: ${profile?.partnerNickname}",
-                style = MaterialTheme.typography.labelSmall,
-                color = tokens.mutedText,
-              )
-            }
-            Text(
-              text = if (couple != null) "Berdua bersama ${partnerName ?: "Pasangan"}" else "Mode Pribadi • Belum terhubung",
-              style = MaterialTheme.typography.bodySmall,
-              color = if (couple != null) tokens.primaryTerracotta else tokens.mutedText,
-            )
-          }
-          IconButton(
-            onClick = { showEditProfileDialog = true },
-            modifier = Modifier.minimumInteractiveComponentSize().testTag("profil_edit_button"),
-          ) {
-            Icon(Icons.Filled.Edit, contentDescription = "Ubah nama & foto profil", tint = tokens.primaryTerracotta)
-          }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-          OutlinedButton(
-            onClick = {
-              avatarPicker.launch(
-                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-              )
-            },
-            shape = RoundedCornerShape(50),
-            modifier = Modifier.weight(1f).height(40.dp).testTag("profil_upload_photo_button"),
-          ) {
-            Icon(Icons.Filled.CameraAlt, contentDescription = null, modifier = Modifier.size(15.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Ganti Foto", maxLines = 1, overflow = TextOverflow.Ellipsis)
-          }
-          OutlinedButton(
-            onClick = { showEditProfileDialog = true },
-            shape = RoundedCornerShape(50),
-            modifier = Modifier.weight(1f).height(40.dp).testTag("profil_rename_button"),
-          ) {
-            Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Ganti Nama", maxLines = 1, overflow = TextOverflow.Ellipsis)
-          }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-          ProfileStatCol("Album", "$albumCount")
-          ProfileStatCol("Kenangan", "$memoryCount")
-          ProfileStatCol("Jurnal", "$journalCount")
-          ProfileStatCol("Kapsul", "$capsuleCount")
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-        Text("Penyimpanan media lokal: $localStorageLabel", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+  val bannerPicker =
+    rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+      if (uri != null) {
+        onPickProfileBanner(uri)
       }
     }
 
-    // Expanded Theme EVORIA & Liquid Glass Navbar Card
+  var showEditProfileDialog by remember { mutableStateOf(false) }
+  var confirmWipeAllData by remember { mutableStateOf(false) }
+
+  val heroTopColor = tokens.primaryTerracotta
+  val heroBottomColor =
+    if (tokens.isDark) tokens.secondarySurface else tokens.primaryTerracotta.copy(alpha = 0.84f)
+  val customBannerUri = userPrefs.profileBannerUri
+  val hasCustomBanner = !customBannerUri.isNullOrBlank()
+
+  LazyColumn(
+    modifier = Modifier.fillMaxSize().testTag("profil_lazy_column"),
+    contentPadding = PaddingValues(bottom = 120.dp),
+    verticalArrangement = Arrangement.spacedBy(14.dp),
+  ) {
+    // Item 0: Colored/Photo/Video Top-Only Header Banner + Overlapping Clean Stats Card
     item {
-      EvoriaCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Filled.Palette, contentDescription = null, tint = tokens.primaryTerracotta)
-          Spacer(modifier = Modifier.width(10.dp))
-          Column {
-            Text("Tema EVORIA & Liquid Navbar", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
-            Text("Sesuaikan atmosfer warna, palet aksen & optik bilah navigasi.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
-          }
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Text("Mode Kanvas", style = MaterialTheme.typography.labelMedium, color = tokens.mutedText)
-        Spacer(modifier = Modifier.height(4.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          ThemeMode.entries.forEach { mode ->
-            Row(
-              modifier =
-                Modifier
-                  .fillMaxWidth()
-                  .clip(RoundedCornerShape(12.dp))
-                  .clickable { onSetThemeMode(mode) }
-                  .padding(vertical = 8.dp, horizontal = 10.dp),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Text(mode.labelId, style = MaterialTheme.typography.bodyMedium, color = tokens.inkText)
-              if (userPrefs.themeMode == mode) {
-                Icon(Icons.Filled.CheckCircle, contentDescription = "Dipilih", tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
-              }
-            }
-          }
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = tokens.outlineSoft)
-
-        Text("Aksen Warna EVORIA", style = MaterialTheme.typography.labelMedium, color = tokens.mutedText)
-        Spacer(modifier = Modifier.height(6.dp))
-        FlowRow(
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-          EvoriaAccentPreset.entries.forEach { preset ->
-            val dotColor = Color(if (tokens.isDark) preset.darkPrimaryHex else preset.lightPrimaryHex)
-            FilterChip(
-              selected = userPrefs.accentPreset == preset,
-              onClick = { onSetAccentPreset(preset) },
-              label = { Text(preset.labelId) },
-              leadingIcon = {
-                Box(
-                  modifier =
-                    Modifier
-                      .size(12.dp)
-                      .clip(CircleShape)
-                      .background(dotColor)
-                      .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape),
-                )
-              },
-              colors =
-                FilterChipDefaults.filterChipColors(
-                  selectedContainerColor = dotColor.copy(alpha = 0.22f),
-                  selectedLabelColor = tokens.inkText,
-                ),
-              modifier = Modifier.testTag("tema_accent_${preset.name.lowercase()}"),
-            )
-          }
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = tokens.outlineSoft)
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Filled.Tune, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
-          Spacer(modifier = Modifier.width(6.dp))
-          Text("Gaya Tema Navbar", style = MaterialTheme.typography.labelMedium, color = tokens.mutedText)
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-          NavbarThemeStyle.entries.forEach { style ->
-            val selected = userPrefs.navbarThemeStyle == style
-            Surface(
-              shape = RoundedCornerShape(14.dp),
-              color =
-                if (selected) tokens.primaryTerracotta.copy(alpha = 0.14f)
-                else tokens.secondarySurface.copy(alpha = 0.45f),
-              border =
-                BorderStroke(
-                  1.dp,
-                  if (selected) tokens.primaryTerracotta.copy(alpha = 0.55f) else tokens.outlineSoft,
-                ),
-              modifier =
-                Modifier
-                  .fillMaxWidth()
-                  .clip(RoundedCornerShape(14.dp))
-                  .clickable { onSetNavbarThemeStyle(style) }
-                  .testTag("navbar_theme_${style.name.lowercase()}"),
-            ) {
-              Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-              ) {
-                Column(modifier = Modifier.weight(1f)) {
-                  Text(style.labelId, style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
-                  Text(style.descId, style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
-                }
-                if (selected) {
-                  Icon(Icons.Filled.CheckCircle, contentDescription = "Dipilih", tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
-                }
-              }
-            }
-          }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        Text("Intensitas Kilau & Dispersi Kaca Navbar", style = MaterialTheme.typography.labelMedium, color = tokens.mutedText)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-          NavbarGlassIntensity.entries.forEach { intensity ->
-            FilterChip(
-              selected = userPrefs.navbarGlassIntensity == intensity,
-              onClick = { onSetNavbarGlassIntensity(intensity) },
-              label = { Text(intensity.labelId, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-              colors =
-                FilterChipDefaults.filterChipColors(
-                  selectedContainerColor = tokens.primaryTerracotta.copy(alpha = 0.22f),
-                  selectedLabelColor = tokens.inkText,
-                ),
-              modifier = Modifier.weight(1f).testTag("navbar_intensity_${intensity.name.lowercase()}"),
-            )
-          }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        Text("Pratinjau Langsung Navbar:", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
-        Spacer(modifier = Modifier.height(6.dp))
+      Column(modifier = Modifier.fillMaxWidth()) {
         Box(
           modifier =
             Modifier
               .fillMaxWidth()
-              .clip(RoundedCornerShape(22.dp))
-              .background(
-                Brush.linearGradient(
-                  if (tokens.isDark) listOf(Color(0xFF28201E), Color(0xFF171316))
-                  else listOf(tokens.secondarySurface, tokens.accentPeach.copy(alpha = 0.45f))
-                )
-              )
-              .padding(vertical = 8.dp),
+              .clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp)),
         ) {
-          LiquidGlassNavbar(
-            selectedTabIndex = miniPreviewTab,
-            onTabSelected = { miniPreviewTab = it },
-            reducedMotionOverride = userPrefs.reducedMotionOverride,
-            navbarThemeStyle = userPrefs.navbarThemeStyle,
-            navbarGlassIntensity = userPrefs.navbarGlassIntensity,
-            applyNavigationBarInsets = false,
-            modifier = Modifier.testTag("profil_navbar_live_preview"),
+          Box(
+            modifier =
+              Modifier
+                .matchParentSize()
+                .background(Brush.verticalGradient(listOf(heroTopColor, heroBottomColor)))
           )
-        }
 
-        Spacer(modifier = Modifier.height(10.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text("Kurangi Gerakan (Reduced Motion)", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
-            Text("Tenangkan transisi kapsul & efek bloom.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
-          }
-          Switch(checked = userPrefs.reducedMotionOverride, onCheckedChange = onSetReducedMotion)
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text("Kunci 60 FPS (Performa Mulus)", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
-            Text("Kunci refresh rate 60 Hz agar guliran & animasi tetap stabil.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
-          }
-          Switch(
-            checked = userPrefs.lock60Fps,
-            onCheckedChange = onSetLock60Fps,
-            modifier = Modifier.testTag("profil_lock_60fps_switch"),
-          )
-        }
-      }
-    }
-
-    // Menu Actions
-    item {
-      EvoriaCard {
-        ProfileMenuItem(
-          icon = Icons.Filled.People,
-          title = "Hubungkan Pasangan",
-          subtitle = if (couple != null) "Terkoneksi dengan ${partnerName ?: "Pasangan"}" else "Buat kode 6 karakter / pindai undangan",
-          onClick = onOpenConnectPartner,
-          testTag = "profil_connect_partner",
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.Inbox,
-          title = "Kotak Masuk EVORIA Share",
-          subtitle = "Permintaan berbagi foto/album dengan pasangan",
-          badgeCount = pendingShareRequestsCount,
-          onClick = onOpenShareInbox,
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.Notifications,
-          title = "Pusat Notifikasi & Preferensi",
-          subtitle = "Aktivitas undangan, share, kapsul & keamanan",
-          badgeCount = unreadNotificationCount,
-          onClick = onOpenNotifications,
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.MusicNote,
-          title = "Musik & Soundtrack Kita",
-          subtitle = "Playlist lagu & impor Spotify bergaya gelap",
-          onClick = onOpenMusic,
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.CloudUpload,
-          title = "Antrean Unggahan",
-          subtitle = "Status pemrosesan & pemulihan otomatis",
-          onClick = onOpenUploadQueue,
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.Security,
-          title = "Keamanan & Kunci Aplikasi",
-          subtitle = if (securitySettings.appLockEnabled) "Aktif (${securitySettings.preferredMethod.labelId})" else "PIN 6-digit & Biometrik belum aktif",
-          onClick = onOpenSecurity,
-          testTag = "profil_security_button",
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.Backup,
-          title = "Cadangan, Ekspor & Data Lokal",
-          subtitle = "Cadangkan metadata ke Firestore atau ekspor JSON",
-          onClick = onOpenBackupStorage,
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.TouchApp,
-          title = "Showcase Liquid Glass Navbar",
-          subtitle =
-            if (userPrefs.quickOpenShowcaseOnLaunch) {
-              "Buka Cepat Aktif • Uji gestur, optik & responsivitas"
+          if (hasCustomBanner) {
+            if (userPrefs.profileBannerType == "video") {
+              EvoriaLoopingVideoSurface(
+                videoUri = customBannerUri!!,
+                modifier = Modifier.matchParentSize(),
+              )
             } else {
-              "Uji tap, tekan-tahan, geser elastis & dispersi kromatik"
-            },
-          onClick = onOpenLiquidGlassShowcase,
-          testTag = "profil_liquid_glass_showcase",
-        )
-        ProfileMenuItem(
-          icon = Icons.Filled.Info,
-          title = "Tentang EVORIA",
-          subtitle = "Developer RAFFA AULIA MUSYAWAL • Versi ${BuildConfig.VERSION_NAME}",
-          onClick = onOpenAbout,
-          testTag = "profil_about_button",
-        )
+              val bannerReq = rememberThumbnailRequest(customBannerUri, sizePx = 720)
+              AsyncImage(
+                model = bannerReq,
+                contentDescription = "Latar header profil",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize(),
+              )
+            }
+            // Top-only gradient overlay fading into the screen canvas before the stats card
+            Box(
+              modifier =
+                Modifier
+                  .matchParentSize()
+                  .background(
+                    Brush.verticalGradient(
+                      0.0f to Color.Black.copy(alpha = 0.56f),
+                      0.52f to Color.Black.copy(alpha = 0.30f),
+                      0.82f to tokens.background.copy(alpha = 0.72f),
+                      1.0f to tokens.background,
+                    )
+                  )
+            )
+          }
+
+          Column(
+            modifier =
+              Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 42.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+            Box(
+              modifier =
+                Modifier
+                  .size(56.dp)
+                  .clickable {
+                    avatarPicker.launch(
+                      PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                  }
+                  .testTag("profil_avatar_picker"),
+            ) {
+              Box(
+                modifier =
+                  Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.22f))
+                    .border(1.5.dp, Color.White.copy(alpha = 0.65f), CircleShape),
+                contentAlignment = Alignment.Center,
+              ) {
+                if (!profile?.avatarUrl.isNullOrBlank()) {
+                  val avatarReq = rememberThumbnailRequest(profile?.avatarUrl, sizePx = 160)
+                  AsyncImage(
+                    model = avatarReq,
+                    contentDescription = "Foto profil $displayName",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                  )
+                } else {
+                  Text(
+                    text = displayName.take(1).uppercase(),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                  )
+                }
+              }
+              Surface(
+                color = tokens.elevatedCard,
+                shape = CircleShape,
+                border = BorderStroke(1.dp, heroTopColor),
+                modifier = Modifier.size(20.dp).align(Alignment.BottomEnd),
+              ) {
+                Box(contentAlignment = Alignment.Center) {
+                  Icon(
+                    Icons.Filled.CameraAlt,
+                    contentDescription = "Ubah foto profil",
+                    tint = tokens.primaryTerracotta,
+                    modifier = Modifier.size(11.dp),
+                  )
+                }
+              }
+            }
+
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = if (couple != null) "Berdua bersama ${partnerName ?: "Pasangan"}" else "Ruang EVORIA",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White.copy(alpha = 0.85f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+              Text(
+                text = displayName,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+              if (!profile?.partnerNickname.isNullOrBlank()) {
+                Text(
+                  text = "Sapaan: ${profile?.partnerNickname}",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = Color.White.copy(alpha = 0.78f),
+                  maxLines = 1,
+                )
+              }
+            }
+
+            Surface(
+              shape = CircleShape,
+              color = Color.White.copy(alpha = 0.2f),
+              modifier =
+                Modifier
+                  .size(42.dp)
+                  .clip(CircleShape)
+                  .clickable { showEditProfileDialog = true }
+                  .testTag("profil_edit_button"),
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  Icons.Filled.Edit,
+                  contentDescription = "Ubah profil",
+                  tint = Color.White,
+                  modifier = Modifier.size(19.dp),
+                )
+              }
+            }
+          }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Surface(
+                shape = RoundedCornerShape(50),
+                color = Color.Black.copy(alpha = 0.28f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.32f)),
+                modifier =
+                  Modifier
+                    .minimumInteractiveComponentSize()
+                    .clip(RoundedCornerShape(50))
+                    .clickable {
+                      bannerPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                      )
+                    }
+                    .testTag("profil_banner_picker_button"),
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.PhotoLibrary,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(15.dp),
+                  )
+                  Text(
+                    text = if (hasCustomBanner) "Ganti Foto / Video Latar" else "Pilih Foto / Video Latar",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = Color.White,
+                  )
+                }
+              }
+
+              if (hasCustomBanner) {
+                Surface(
+                  shape = RoundedCornerShape(50),
+                  color = Color.Black.copy(alpha = 0.28f),
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.32f)),
+                  modifier =
+                    Modifier
+                      .minimumInteractiveComponentSize()
+                      .clip(RoundedCornerShape(50))
+                      .clickable(onClick = onResetProfileBanner)
+                      .testTag("profil_banner_reset_button"),
+                ) {
+                  Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.Refresh,
+                      contentDescription = "Kembalikan latar profil",
+                      tint = Color.White,
+                      modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                      text = "Reset",
+                      style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                      color = Color.White,
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Overlapping Clean Stats Summary Card
+        Surface(
+          shape = RoundedCornerShape(22.dp),
+          color = tokens.elevatedCard,
+          tonalElevation = 2.dp,
+          shadowElevation = 4.dp,
+          border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.45f)),
+          modifier =
+            Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 20.dp)
+              .offset(y = (-24).dp),
+        ) {
+          Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceEvenly,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              ProfileStatCol("Album", "$albumCount", Modifier.weight(1f))
+              VerticalDivider(modifier = Modifier.height(26.dp), color = tokens.outlineSoft.copy(alpha = 0.6f))
+              ProfileStatCol("Kenangan", "$memoryCount", Modifier.weight(1f))
+              VerticalDivider(modifier = Modifier.height(26.dp), color = tokens.outlineSoft.copy(alpha = 0.6f))
+              ProfileStatCol("Jurnal", "$journalCount", Modifier.weight(1f))
+              VerticalDivider(modifier = Modifier.height(26.dp), color = tokens.outlineSoft.copy(alpha = 0.6f))
+              ProfileStatCol("Kapsul", "$capsuleCount", Modifier.weight(1f))
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = tokens.outlineSoft.copy(alpha = 0.45f))
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                text = "Penyimpanan media lokal",
+                style = MaterialTheme.typography.labelSmall,
+                color = tokens.mutedText,
+              )
+              Text(
+                text = localStorageLabel,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = tokens.inkText,
+              )
+            }
+          }
+        }
       }
     }
 
-    // Delete All Data + Sign Out Actions
+    // Item 1: Mode Kanvas Segmented Pill + Link to dedicated Appearance Studio
     item {
-      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+      Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = tokens.elevatedCard,
+        border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+      ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+          // Segmented Pill (Terang | Gelap | Sistem) like reference UI
+          Surface(
+            shape = RoundedCornerShape(50),
+            color = tokens.secondarySurface.copy(alpha = if (tokens.isDark) 0.72f else 0.8f),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth().padding(4.dp),
+              horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              ThemeMode.entries.forEach { mode ->
+                val selected = userPrefs.themeMode == mode
+                val shortLabel =
+                  when (mode) {
+                    ThemeMode.LIGHT -> "Terang"
+                    ThemeMode.DARK -> "Gelap"
+                    ThemeMode.SYSTEM -> "Sistem"
+                  }
+                Surface(
+                  shape = RoundedCornerShape(50),
+                  color = if (selected) tokens.primaryTerracotta else Color.Transparent,
+                  modifier =
+                    Modifier
+                      .weight(1f)
+                      .clip(RoundedCornerShape(50))
+                      .clickable { onSetThemeMode(mode) }
+                      .testTag("profil_theme_pill_${mode.name.lowercase()}"),
+                ) {
+                  Text(
+                    text = shortLabel,
+                    style = MaterialTheme.typography.labelLarge.copy(
+                      fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    ),
+                    color = if (selected) Color.White else tokens.mutedText,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                  )
+                }
+              }
+            }
+          }
+
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+
+          ProfileCleanRow(
+            icon = Icons.Filled.Palette,
+            title = "Tema Warna & Liquid Glass Navbar",
+            subtitle = "${userPrefs.accentPreset.labelId} • ${userPrefs.navbarThemeStyle.labelId}",
+            testTag = "profil_appearance_button",
+            onClick = onOpenAppearanceSettings,
+          )
+        }
+      }
+    }
+
+    // Item 2: Performa & Gerakan (index 2 kept for lock60Fps toggle test contract)
+    item {
+      Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = tokens.elevatedCard,
+        border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+      ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text("Mode Hemat 60 FPS", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
+              Text("Batasi refresh rate ke 60 Hz untuk hemat baterai (nonaktif = mulus 90/120 Hz adaptif).", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
+            }
+            Switch(
+              checked = userPrefs.lock60Fps,
+              onCheckedChange = onSetLock60Fps,
+              modifier = Modifier.testTag("profil_lock_60fps_switch"),
+            )
+          }
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text("Kurangi Gerakan", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
+              Text("Sederhanakan efek animasi kapsul & bloom.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
+            }
+            Switch(
+              checked = userPrefs.reducedMotionOverride,
+              onCheckedChange = onSetReducedMotion,
+            )
+          }
+        }
+      }
+    }
+
+    // Item 3: Grouped Clean Menu Rows
+    item {
+      Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = tokens.elevatedCard,
+        border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+      ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+          ProfileCleanRow(
+            icon = Icons.Filled.People,
+            title = "Hubungkan Pasangan",
+            subtitle = if (couple != null) "Terkoneksi dengan ${partnerName ?: "Pasangan"}" else "Buat kode 6 karakter / pindai QR",
+            onClick = onOpenConnectPartner,
+            testTag = "profil_connect_partner",
+          )
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          ProfileCleanRow(
+            icon = Icons.Filled.Inbox,
+            title = "Kotak Masuk EVORIA Share",
+            subtitle = "Kiriman foto & album dari pasangan",
+            badgeCount = pendingShareRequestsCount,
+            onClick = onOpenShareInbox,
+          )
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          ProfileCleanRow(
+            icon = Icons.Filled.Notifications,
+            title = "Notifikasi & Pengingat",
+            subtitle = "Undangan, kapsul waktu & keamanan",
+            badgeCount = unreadNotificationCount,
+            onClick = onOpenNotifications,
+          )
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          ProfileCleanRow(
+            icon = Icons.Filled.MusicNote,
+            title = "Musik & Soundtrack",
+            subtitle = "Cari lagu YouTube & impor playlist Spotify",
+            onClick = onOpenMusic,
+          )
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          ProfileCleanRow(
+            icon = Icons.Filled.CloudUpload,
+            title = "Antrean Unggahan",
+            subtitle = "Status pemrosesan media",
+            onClick = onOpenUploadQueue,
+          )
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          ProfileCleanRow(
+            icon = Icons.Filled.Security,
+            title = "Keamanan & Kunci Aplikasi",
+            subtitle = if (securitySettings.appLockEnabled) "Aktif (${securitySettings.preferredMethod.labelId})" else "PIN 6-digit & Biometrik",
+            onClick = onOpenSecurity,
+            testTag = "profil_security_button",
+          )
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          ProfileCleanRow(
+            icon = Icons.Filled.Backup,
+            title = "Cadangan & Penyimpanan",
+            subtitle = "Cadangkan metadata ke Cloud atau JSON",
+            onClick = onOpenBackupStorage,
+          )
+          HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+          ProfileCleanRow(
+            icon = Icons.Filled.TouchApp,
+            title = "Showcase Liquid Glass Navbar",
+            subtitle = "Uji gestur elastis & efek optik",
+            onClick = onOpenLiquidGlassShowcase,
+            testTag = "profil_liquid_glass_showcase",
+          )
+        }
+      }
+    }
+
+    // Item 4: Account, About & Data Management (index 4 kept for profil_about_button & profil_delete_all_data_button tests)
+    item {
+      Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        Surface(
+          shape = RoundedCornerShape(22.dp),
+          color = tokens.elevatedCard,
+          border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.5f)),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+            ProfileCleanRow(
+              icon = Icons.Filled.Info,
+              title = "Tentang EVORIA",
+              subtitle = "RAFFA AULIA MUSYAWAL • Versi ${BuildConfig.VERSION_NAME}",
+              onClick = onOpenAbout,
+              testTag = "profil_about_button",
+            )
+            HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+            ProfileCleanRow(
+              icon = Icons.AutoMirrored.Filled.ExitToApp,
+              title = "Keluar dari Akun Google",
+              subtitle = "Ganti akun atau keluar sesi saat ini",
+              onClick = onSignOut,
+              testTag = "sign_out_button",
+            )
+          }
+        }
+
         OutlinedButton(
           onClick = { confirmWipeAllData = true },
           shape = RoundedCornerShape(50),
-          border = BorderStroke(1.dp, tokens.roseError.copy(alpha = 0.75f)),
-          modifier = Modifier.fillMaxWidth().height(50.dp).testTag("profil_delete_all_data_button"),
+          border = BorderStroke(1.dp, tokens.roseError.copy(alpha = 0.65f)),
+          modifier = Modifier.fillMaxWidth().height(48.dp).testTag("profil_delete_all_data_button"),
         ) {
           Icon(Icons.Filled.DeleteForever, contentDescription = null, tint = tokens.roseError, modifier = Modifier.size(18.dp))
           Spacer(modifier = Modifier.width(8.dp))
           Text("Hapus Seluruh Data Perangkat", color = tokens.roseError)
-        }
-
-        OutlinedButton(
-          onClick = onSignOut,
-          shape = RoundedCornerShape(50),
-          border = BorderStroke(1.dp, tokens.outlineSoft),
-          modifier = Modifier.fillMaxWidth().height(50.dp).testTag("sign_out_button"),
-        ) {
-          Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null, tint = tokens.inkText, modifier = Modifier.size(18.dp))
-          Spacer(modifier = Modifier.width(8.dp))
-          Text("Keluar dari Akun Google", color = tokens.inkText)
         }
       }
     }
@@ -673,6 +813,318 @@ fun ProfilScreen(
         TextButton(onClick = { confirmWipeAllData = false }) { Text("Batal") }
       },
     )
+  }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun AppearanceSettingsScreen(
+  userPrefs: AppUserPrefs,
+  onSetThemeMode: (ThemeMode) -> Unit,
+  onSetAccentPreset: (EvoriaAccentPreset) -> Unit,
+  onSetCustomAccentHex: (Long?) -> Unit = {},
+  onSetNavbarThemeStyle: (NavbarThemeStyle) -> Unit,
+  onSetNavbarGlassIntensity: (NavbarGlassIntensity) -> Unit,
+  onBack: () -> Unit,
+) {
+  BackHandler(onBack = onBack)
+  val tokens = LocalEvoriaTokens.current
+  var miniPreviewTab by remember { mutableIntStateOf(4) }
+
+  val initialSeedArgb =
+    remember(userPrefs.customAccentHex, userPrefs.accentPreset, tokens.isDark) {
+      (userPrefs.customAccentHex
+        ?: if (tokens.isDark) userPrefs.accentPreset.darkPrimaryHex else userPrefs.accentPreset.lightPrimaryHex)
+        .toInt()
+    }
+  val initialHsv = remember(initialSeedArgb) {
+    FloatArray(3).also { AndroidColor.colorToHSV(initialSeedArgb, it) }
+  }
+  var hue by remember(initialSeedArgb) { mutableFloatStateOf(initialHsv[0]) }
+  var sat by remember(initialSeedArgb) { mutableFloatStateOf(initialHsv[1].coerceIn(0.15f, 1f)) }
+  var valueBright by remember(initialSeedArgb) { mutableFloatStateOf(initialHsv[2].coerceIn(0.25f, 1f)) }
+  val liveColorInt = remember(hue, sat, valueBright) {
+    AndroidColor.HSVToColor(floatArrayOf(hue, sat, valueBright))
+  }
+  var hexInput by remember(liveColorInt) {
+    mutableStateOf(String.format("#%06X", 0xFFFFFF and liveColorInt))
+  }
+
+  EvoriaSanctuaryBackdrop {
+    Column(
+      modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      EvoriaTopBar(
+        title = "Tema & Liquid Glass",
+        subtitle = "Palet EVORIA & optik bilah navigasi",
+        onBack = onBack,
+      )
+      Column(
+        modifier =
+          Modifier
+            .weight(1f)
+            .widthIn(max = 600.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+      ) {
+        EvoriaCard(elevated = true) {
+          Text("Mode Kanvas", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+          Spacer(modifier = Modifier.height(8.dp))
+          ThemeMode.entries.forEach { mode ->
+            Row(
+              modifier =
+                Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(12.dp))
+                  .clickable { onSetThemeMode(mode) }
+                  .padding(vertical = 8.dp, horizontal = 8.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(mode.labelId, style = MaterialTheme.typography.bodyMedium, color = tokens.inkText)
+              if (userPrefs.themeMode == mode) {
+                Icon(Icons.Filled.CheckCircle, contentDescription = "Dipilih", tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
+              }
+            }
+          }
+        }
+
+        EvoriaCard {
+          Text("Aksen Warna EVORIA", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+          Spacer(modifier = Modifier.height(8.dp))
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            EvoriaAccentPreset.entries.forEach { preset ->
+              val dotColor = Color(if (tokens.isDark) preset.darkPrimaryHex else preset.lightPrimaryHex)
+              FilterChip(
+                selected = userPrefs.customAccentHex == null && userPrefs.accentPreset == preset,
+                onClick = { onSetAccentPreset(preset) },
+                label = { Text(preset.labelId) },
+                leadingIcon = {
+                  Box(
+                    modifier =
+                      Modifier
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(dotColor)
+                        .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape),
+                  )
+                },
+                colors =
+                  FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = dotColor.copy(alpha = 0.22f),
+                    selectedLabelColor = tokens.inkText,
+                  ),
+                modifier = Modifier.testTag("tema_accent_${preset.name.lowercase()}"),
+              )
+            }
+          }
+        }
+
+        EvoriaCard(modifier = Modifier.testTag("tema_custom_color_card")) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text("Palet Warna Bebas", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+              Text(
+                if (userPrefs.customAccentHex != null) "Warna kustom aktif" else "Pilih warna aksen apa saja sesuai selera",
+                style = MaterialTheme.typography.bodySmall,
+                color = tokens.mutedText,
+              )
+            }
+            Box(
+              modifier =
+                Modifier
+                  .size(36.dp)
+                  .clip(CircleShape)
+                  .background(Color(liveColorInt))
+                  .border(2.dp, Color.White.copy(alpha = 0.85f), CircleShape),
+            )
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+          Box(
+            modifier =
+              Modifier
+                .fillMaxWidth()
+                .height(14.dp)
+                .clip(RoundedCornerShape(50))
+                .background(
+                  Brush.horizontalGradient(
+                    listOf(
+                      Color(0xFFFF3B30),
+                      Color(0xFFFFCC00),
+                      Color(0xFF34C759),
+                      Color(0xFF00C7BE),
+                      Color(0xFF007AFF),
+                      Color(0xFFAF52DE),
+                      Color(0xFFFF2D55),
+                      Color(0xFFFF3B30),
+                    )
+                  )
+                )
+          )
+          Slider(
+            value = hue,
+            onValueChange = { hue = it },
+            valueRange = 0f..360f,
+            colors = SliderDefaults.colors(thumbColor = Color(liveColorInt), activeTrackColor = Color(liveColorInt)),
+          )
+          Text("Kejenuhan (${(sat * 100).toInt()}%)", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+          Slider(
+            value = sat,
+            onValueChange = { sat = it },
+            valueRange = 0.1f..1f,
+            colors = SliderDefaults.colors(thumbColor = Color(liveColorInt), activeTrackColor = Color(liveColorInt)),
+          )
+          Text("Kecerahan (${(valueBright * 100).toInt()}%)", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+          Slider(
+            value = valueBright,
+            onValueChange = { valueBright = it },
+            valueRange = 0.25f..1f,
+            colors = SliderDefaults.colors(thumbColor = Color(liveColorInt), activeTrackColor = Color(liveColorInt)),
+          )
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            OutlinedTextField(
+              value = hexInput,
+              onValueChange = { raw ->
+                val cleaned = raw.uppercase().take(7)
+                hexInput = cleaned
+                if (cleaned.matches(Regex("^#[0-9A-F]{6}$"))) {
+                  val parsed = runCatching { AndroidColor.parseColor(cleaned) }.getOrNull()
+                  if (parsed != null) {
+                    val hsvOut = FloatArray(3)
+                    AndroidColor.colorToHSV(parsed, hsvOut)
+                    hue = hsvOut[0]
+                    sat = hsvOut[1].coerceIn(0.1f, 1f)
+                    valueBright = hsvOut[2].coerceIn(0.25f, 1f)
+                  }
+                }
+              },
+              label = { Text("Kode Hex") },
+              singleLine = true,
+              modifier = Modifier.weight(1f).testTag("tema_custom_hex_input"),
+            )
+            Button(
+              onClick = {
+                val parsedHex =
+                  hexInput
+                    .takeIf { it.matches(Regex("^#[0-9A-F]{6}$")) }
+                    ?.let { runCatching { AndroidColor.parseColor(it) }.getOrNull() }
+                    ?: liveColorInt
+                val opaqueLong = 0xFF000000L or (parsedHex.toLong() and 0x00FFFFFFL)
+                onSetCustomAccentHex(opaqueLong)
+              },
+              shape = RoundedCornerShape(50),
+              colors = ButtonDefaults.buttonColors(containerColor = Color(liveColorInt)),
+              modifier = Modifier.height(50.dp).testTag("tema_custom_color_apply"),
+            ) {
+              Text("Terapkan", color = Color.White)
+            }
+          }
+
+          if (userPrefs.customAccentHex != null) {
+            Spacer(modifier = Modifier.height(6.dp))
+            TextButton(onClick = { onSetCustomAccentHex(null) }) {
+              Text("Kembalikan ke Preset (${userPrefs.accentPreset.labelId})", color = tokens.mutedText)
+            }
+          }
+        }
+
+        EvoriaCard {
+          Text("Gaya & Kilau Liquid Navbar", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+          Spacer(modifier = Modifier.height(8.dp))
+          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            NavbarThemeStyle.entries.forEach { style ->
+              val selected = userPrefs.navbarThemeStyle == style
+              Surface(
+                shape = RoundedCornerShape(14.dp),
+                color =
+                  if (selected) tokens.primaryTerracotta.copy(alpha = 0.14f)
+                  else tokens.secondarySurface.copy(alpha = 0.45f),
+                border =
+                  BorderStroke(
+                    1.dp,
+                    if (selected) tokens.primaryTerracotta.copy(alpha = 0.55f) else tokens.outlineSoft,
+                  ),
+                modifier =
+                  Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onSetNavbarThemeStyle(style) }
+                    .testTag("navbar_theme_${style.name.lowercase()}"),
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(style.labelId, style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
+                    Text(style.descId, style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
+                  }
+                  if (selected) {
+                    Icon(Icons.Filled.CheckCircle, contentDescription = "Dipilih", tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
+                  }
+                }
+              }
+            }
+          }
+
+          Spacer(modifier = Modifier.height(12.dp))
+          Text("Intensitas Kilau Kaca", style = MaterialTheme.typography.labelMedium, color = tokens.mutedText)
+          Spacer(modifier = Modifier.height(6.dp))
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            NavbarGlassIntensity.entries.forEach { intensity ->
+              FilterChip(
+                selected = userPrefs.navbarGlassIntensity == intensity,
+                onClick = { onSetNavbarGlassIntensity(intensity) },
+                label = { Text(intensity.labelId, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                modifier = Modifier.weight(1f).testTag("navbar_intensity_${intensity.name.lowercase()}"),
+              )
+            }
+          }
+
+          Spacer(modifier = Modifier.height(12.dp))
+          Box(
+            modifier =
+              Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(
+                  Brush.linearGradient(
+                    if (tokens.isDark) listOf(Color(0xFF28201E), Color(0xFF171316))
+                    else listOf(tokens.secondarySurface, tokens.accentPeach.copy(alpha = 0.45f))
+                  )
+                )
+                .padding(vertical = 8.dp),
+          ) {
+            LiquidGlassNavbar(
+              selectedTabIndex = miniPreviewTab,
+              onTabSelected = { miniPreviewTab = it },
+              reducedMotionOverride = userPrefs.reducedMotionOverride,
+              navbarThemeStyle = userPrefs.navbarThemeStyle,
+              navbarGlassIntensity = userPrefs.navbarGlassIntensity,
+              applyNavigationBarInsets = false,
+              modifier = Modifier.testTag("profil_navbar_live_preview"),
+            )
+          }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+      }
+    }
   }
 }
 
@@ -720,8 +1172,9 @@ private fun EditProfileDialog(
         contentAlignment = Alignment.Center,
       ) {
         if (previewModel != null && previewModel.toString().isNotBlank()) {
+          val previewReq = rememberThumbnailRequest(previewModel, sizePx = 180)
           AsyncImage(
-            model = previewModel,
+            model = previewReq,
             contentDescription = "Pratinjau foto profil",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
@@ -764,16 +1217,16 @@ private fun EditProfileDialog(
 }
 
 @Composable
-private fun ProfileStatCol(label: String, value: String) {
+private fun ProfileStatCol(label: String, value: String, modifier: Modifier = Modifier) {
   val tokens = LocalEvoriaTokens.current
-  Column(horizontalAlignment = Alignment.CenterHorizontally) {
-    Text(value, style = MaterialTheme.typography.titleLarge, color = tokens.primaryTerracotta)
+  Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+    Text(value, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = tokens.primaryTerracotta)
     Text(label, style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
   }
 }
 
 @Composable
-private fun ProfileMenuItem(
+private fun ProfileCleanRow(
   icon: ImageVector,
   title: String,
   subtitle: String,
@@ -789,20 +1242,35 @@ private fun ProfileMenuItem(
         .clip(RoundedCornerShape(14.dp))
         .clickable(onClick = onClick)
         .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
-        .padding(vertical = 12.dp, horizontal = 4.dp),
+        .padding(vertical = 11.dp, horizontal = 2.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Icon(icon, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(22.dp))
+    Surface(
+      shape = CircleShape,
+      color = tokens.primaryTerracotta.copy(alpha = 0.12f),
+      modifier = Modifier.size(36.dp),
+    ) {
+      Box(contentAlignment = Alignment.Center) {
+        Icon(icon, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
+      }
+    }
     Spacer(modifier = Modifier.width(12.dp))
     Column(modifier = Modifier.weight(1f)) {
-      Text(title, style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
-      Text(subtitle, style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
+      Text(title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = tokens.inkText)
+      Text(subtitle, style = MaterialTheme.typography.bodySmall, color = tokens.mutedText, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     if (badgeCount > 0) {
       Badge(containerColor = tokens.primaryTerracotta, contentColor = Color.White) {
         Text("$badgeCount")
       }
+      Spacer(modifier = Modifier.width(6.dp))
     }
+    Icon(
+      imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+      contentDescription = null,
+      tint = tokens.mutedText.copy(alpha = 0.7f),
+      modifier = Modifier.size(20.dp),
+    )
   }
 }
 
@@ -832,6 +1300,18 @@ fun PartnerConnectionScreen(
   val tokens = LocalEvoriaTokens.current
   var codeInput by remember(initialCodeFromDeepLink) { mutableStateOf(initialCodeFromDeepLink.orEmpty()) }
   var confirmDisconnect by remember { mutableStateOf(false) }
+  var showQrScanner by remember { mutableStateOf(false) }
+  var cameraPermissionDenied by remember { mutableStateOf(false) }
+
+  val cameraPermLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      if (granted) {
+        cameraPermissionDenied = false
+        showQrScanner = true
+      } else {
+        cameraPermissionDenied = true
+      }
+    }
 
   LaunchedEffect(initialCodeFromDeepLink) {
     if (!initialCodeFromDeepLink.isNullOrBlank() && couple == null) {
@@ -968,7 +1448,7 @@ fun PartnerConnectionScreen(
             }
           }
 
-          // Option B: Enter Partner Code + Preview Accept/Decline
+          // Option B: Enter Partner Code OR Scan QR Camera
           EvoriaCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
               Icon(Icons.Filled.Link, contentDescription = null, tint = tokens.primaryTerracotta)
@@ -989,15 +1469,43 @@ fun PartnerConnectionScreen(
               Spacer(modifier = Modifier.height(6.dp))
               Text(inviteError, style = MaterialTheme.typography.bodySmall, color = tokens.roseError)
             }
+            if (cameraPermissionDenied) {
+              Spacer(modifier = Modifier.height(6.dp))
+              Text(
+                "Izin kamera ditolak. Aktifkan izin kamera atau masukkan kode 6 karakter secara manual.",
+                style = MaterialTheme.typography.bodySmall,
+                color = tokens.roseError,
+              )
+            }
             Spacer(modifier = Modifier.height(10.dp))
-            Button(
-              onClick = { onLookupCode(codeInput) },
-              enabled = codeInput.length == 6 && !inviteLoading,
-              shape = RoundedCornerShape(50),
-              colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
-              modifier = Modifier.fillMaxWidth().height(48.dp).testTag("lookup_invite_code_button"),
-            ) {
-              Text("Periksa Kode Undangan")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+              Button(
+                onClick = { onLookupCode(codeInput) },
+                enabled = codeInput.length == 6 && !inviteLoading,
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
+                modifier = Modifier.weight(1f).height(48.dp).testTag("lookup_invite_code_button"),
+              ) {
+                Text("Periksa Kode", maxLines = 1)
+              }
+              OutlinedButton(
+                onClick = {
+                  val hasCam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                  if (hasCam) {
+                    cameraPermissionDenied = false
+                    showQrScanner = true
+                  } else {
+                    cameraPermLauncher.launch(Manifest.permission.CAMERA)
+                  }
+                },
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, tokens.primaryTerracotta.copy(alpha = 0.65f)),
+                modifier = Modifier.height(48.dp).testTag("scan_qr_camera_button"),
+              ) {
+                Icon(Icons.Filled.QrCodeScanner, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Pindai QR", color = tokens.primaryTerracotta, maxLines = 1)
+              }
             }
 
             if (lookedUpInvitation != null) {
@@ -1036,7 +1544,6 @@ fun PartnerConnectionScreen(
             }
           }
 
-          // Active / History Invitations
           if (myInvitations.isNotEmpty()) {
             EvoriaCard {
               Text("Riwayat Kode Saya", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
@@ -1065,6 +1572,17 @@ fun PartnerConnectionScreen(
     }
   }
 
+  if (showQrScanner) {
+    QrCodeCameraScannerDialog(
+      onCodeScanned = { code ->
+        showQrScanner = false
+        codeInput = code.take(6).uppercase()
+        onLookupCode(codeInput)
+      },
+      onDismiss = { showQrScanner = false },
+    )
+  }
+
   if (confirmDisconnect) {
     AlertDialog(
       onDismissRequest = { confirmDisconnect = false },
@@ -1085,12 +1603,130 @@ fun PartnerConnectionScreen(
 }
 
 @Composable
+private fun QrCodeCameraScannerDialog(
+  onCodeScanned: (String) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+  val tokens = LocalEvoriaTokens.current
+  val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+  val reader = remember { MultiFormatReader() }
+  var handled by remember { mutableStateOf(false) }
+
+  DisposableEffect(Unit) {
+    onDispose {
+      runCatching { ProcessCameraProvider.getInstance(context).get().unbindAll() }
+      analysisExecutor.shutdown()
+    }
+  }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+  ) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.safeDrawing)) {
+      AndroidView(
+        factory = { ctx ->
+          PreviewView(ctx).apply {
+            val previewView = this
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+            cameraProviderFuture.addListener(
+              {
+                val cameraProvider = runCatching { cameraProviderFuture.get() }.getOrNull() ?: return@addListener
+                val preview = CameraPreview.Builder().build().also {
+                  it.setSurfaceProvider(previewView.surfaceProvider)
+                }
+                val analysis =
+                  ImageAnalysis.Builder()
+                    .setTargetResolution(Size(960, 720))
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                analysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                  try {
+                    if (!handled) {
+                      val plane = imageProxy.planes.firstOrNull()
+                      if (plane != null) {
+                        val buffer = plane.buffer
+                        val bytes = ByteArray(buffer.remaining())
+                        buffer.get(bytes)
+                        val source =
+                          PlanarYUVLuminanceSource(
+                            bytes,
+                            imageProxy.width,
+                            imageProxy.height,
+                            0,
+                            0,
+                            imageProxy.width,
+                            imageProxy.height,
+                            false,
+                          )
+                        val binary = BinaryBitmap(HybridBinarizer(source))
+                        val decoded = runCatching { reader.decode(binary).text }.getOrNull()
+                        val code = QrCodeGenerator.extractInviteCode(decoded)
+                        if (code != null) {
+                          handled = true
+                          ContextCompat.getMainExecutor(ctx).execute {
+                            onCodeScanned(code)
+                          }
+                        }
+                      }
+                    }
+                  } finally {
+                    reader.reset()
+                    imageProxy.close()
+                  }
+                }
+                runCatching {
+                  cameraProvider.unbindAll()
+                  cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    analysis,
+                  )
+                }
+              },
+              ContextCompat.getMainExecutor(ctx),
+            )
+          }
+        },
+        modifier = Modifier.fillMaxSize(),
+      )
+
+      // Viewfinder overlay frame
+      Box(
+        modifier =
+          Modifier
+            .align(Alignment.Center)
+            .size(230.dp)
+            .border(3.dp, tokens.primaryTerracotta, RoundedCornerShape(24.dp)),
+      )
+
+      Row(
+        modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text("Arahkan ke QR Undangan EVORIA", color = Color.White, style = MaterialTheme.typography.titleMedium)
+        IconButton(onClick = onDismiss) {
+          Icon(Icons.Filled.Close, contentDescription = "Tutup kamera QR", tint = Color.White)
+        }
+      }
+    }
+  }
+}
+
+@Composable
 fun ShareInboxScreen(
   currentUid: String,
   requests: List<SharedContentRequestDto>,
+  sharedMusic: List<SharedMusicDto> = emptyList(),
   onAccept: (SharedContentRequestDto) -> Unit,
   onDecline: (SharedContentRequestDto) -> Unit,
   onRevoke: (SharedContentRequestDto) -> Unit,
+  onAcceptSharedMusic: (SharedMusicDto, playNow: Boolean) -> Unit = { _, _ -> },
+  onDeclineSharedMusic: (SharedMusicDto) -> Unit = {},
   onBack: () -> Unit,
 ) {
   BackHandler(onBack = onBack)
@@ -1098,46 +1734,121 @@ fun ShareInboxScreen(
 
   EvoriaSanctuaryBackdrop {
     Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-      EvoriaTopBar(title = "Kotak Masuk EVORIA Share", subtitle = "Kiriman & persetujuan berdua", onBack = onBack)
-      if (requests.isEmpty()) {
+      EvoriaTopBar(title = "Kotak Masuk EVORIA Share", subtitle = "Kiriman kenangan & musik berdua", onBack = onBack)
+      if (requests.isEmpty() && sharedMusic.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
           EvoriaCard {
             Text("Belum Ada Permintaan EVORIA Share", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
-            Text("Saat kamu atau pasangan mengirim kenangan via EVORIA Share, persetujuan akan muncul di sini.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
+            Text("Saat kamu atau pasangan mengirim kenangan, lagu, atau playlist, persetujuan akan muncul di sini.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
           }
         }
       } else {
         LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-          items(requests, key = { it.id }) { req ->
-            val isIncoming = req.recipientUid == currentUid
-            EvoriaCard {
-              Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(req.title, style = MaterialTheme.typography.titleMedium, color = tokens.inkText, modifier = Modifier.weight(1f))
-                Text(req.status.uppercase(), style = MaterialTheme.typography.labelSmall, color = tokens.primaryTerracotta)
-              }
+          if (sharedMusic.isNotEmpty()) {
+            item {
               Text(
-                if (isIncoming) "Dari ${req.senderName}" else "Dikirim ke pasangan",
-                style = MaterialTheme.typography.labelSmall,
-                color = tokens.mutedText,
+                "Kiriman Playlist & Lagu",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = tokens.primaryTerracotta,
+                modifier = Modifier.testTag("share_inbox_music_section"),
               )
-              if (!req.caption.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(req.caption, style = MaterialTheme.typography.bodySmall, color = tokens.inkText)
-              }
-              if (req.status == "pending") {
-                Spacer(modifier = Modifier.height(10.dp))
-                if (isIncoming) {
-                  Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(onClick = { onDecline(req) }, modifier = Modifier.weight(1f)) { Text("Tolak", color = tokens.roseError) }
-                    Button(
-                      onClick = { onAccept(req) },
-                      colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
-                      modifier = Modifier.weight(1f),
-                    ) { Text("Terima") }
+            }
+            items(sharedMusic, key = { "mus_${it.id}" }) { item ->
+              val isIncoming = item.recipientUid == currentUid
+              EvoriaCard(modifier = Modifier.testTag("shared_music_card_${item.id}")) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+                    Icon(
+                      imageVector = if (item.kind == "playlist") Icons.Filled.LibraryMusic else Icons.Filled.MusicNote,
+                      contentDescription = null,
+                      tint = tokens.primaryTerracotta,
+                    )
+                    Text(item.title, style = MaterialTheme.typography.titleMedium, color = tokens.inkText, maxLines = 1, overflow = TextOverflow.Ellipsis)
                   }
-                } else {
-                  OutlinedButton(onClick = { onRevoke(req) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Batalkan Kiriman", color = tokens.mutedText)
+                  Text(item.status.uppercase(), style = MaterialTheme.typography.labelSmall, color = tokens.primaryTerracotta)
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                val trackCount = remember(item.tracksJson) {
+                  Regex(""""title"\s*:""").findAll(item.tracksJson).count().coerceAtLeast(1)
+                }
+                Text(
+                  text =
+                    if (isIncoming) "Dari ${item.senderName} • ${if (item.kind == "playlist") "$trackCount lagu" else "1 lagu"}"
+                    else "Dikirim ke pasangan • $trackCount lagu",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = tokens.mutedText,
+                )
+                val safeSubtitle = item.subtitle
+                if (!safeSubtitle.isNullOrBlank()) {
+                  Spacer(modifier = Modifier.height(4.dp))
+                  Text(safeSubtitle, style = MaterialTheme.typography.bodySmall, color = tokens.inkText, maxLines = 2)
+                }
+                if (item.status == "pending" && isIncoming) {
+                  Spacer(modifier = Modifier.height(10.dp))
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { onDeclineSharedMusic(item) }, modifier = Modifier.weight(0.8f)) {
+                      Text("Tolak", color = tokens.roseError)
+                    }
+                    OutlinedButton(
+                      onClick = { onAcceptSharedMusic(item, false) },
+                      modifier = Modifier.weight(1f).testTag("accept_music_save_${item.id}"),
+                    ) {
+                      Text("Simpan", color = tokens.inkText)
+                    }
+                    Button(
+                      onClick = { onAcceptSharedMusic(item, true) },
+                      colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
+                      modifier = Modifier.weight(1.1f).testTag("accept_music_play_${item.id}"),
+                    ) {
+                      Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                      Spacer(modifier = Modifier.width(4.dp))
+                      Text("Putar", maxLines = 1)
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if (requests.isNotEmpty()) {
+            item {
+              Text(
+                "Kiriman Kenangan",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = tokens.primaryTerracotta,
+              )
+            }
+            items(requests, key = { it.id }) { req ->
+              val isIncoming = req.recipientUid == currentUid
+              EvoriaCard {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                  Text(req.title, style = MaterialTheme.typography.titleMedium, color = tokens.inkText, modifier = Modifier.weight(1f))
+                  Text(req.status.uppercase(), style = MaterialTheme.typography.labelSmall, color = tokens.primaryTerracotta)
+                }
+                Text(
+                  if (isIncoming) "Dari ${req.senderName}" else "Dikirim ke pasangan",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = tokens.mutedText,
+                )
+                if (!req.caption.isNullOrBlank()) {
+                  Spacer(modifier = Modifier.height(6.dp))
+                  Text(req.caption, style = MaterialTheme.typography.bodySmall, color = tokens.inkText)
+                }
+                if (req.status == "pending") {
+                  Spacer(modifier = Modifier.height(10.dp))
+                  if (isIncoming) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                      OutlinedButton(onClick = { onDecline(req) }, modifier = Modifier.weight(1f)) { Text("Tolak", color = tokens.roseError) }
+                      Button(
+                        onClick = { onAccept(req) },
+                        colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
+                        modifier = Modifier.weight(1f),
+                      ) { Text("Terima") }
+                    }
+                  } else {
+                    OutlinedButton(onClick = { onRevoke(req) }, modifier = Modifier.fillMaxWidth()) {
+                      Text("Batalkan Kiriman", color = tokens.mutedText)
+                    }
                   }
                 }
               }
@@ -1539,19 +2250,30 @@ fun AppLockScreen(
     }
   }
 
+  var biometricAutoTriggered by rememberSaveable { mutableStateOf(false) }
+
   fun launchBiometricIfAvailable() {
     val activity = context as? FragmentActivity ?: return
     if (!capabilities.canUseBiometric) return
+    val methodLabel =
+      when (securitySettings.preferredMethod) {
+        LockMethod.FACE -> "Gunakan pengenalan wajah untuk membuka EVORIA"
+        LockMethod.FINGERPRINT -> "Tempelkan sidik jari untuk membuka EVORIA"
+        LockMethod.PIN -> "Gunakan sidik jari atau pengenalan wajah Anda"
+      }
     BiometricHelper.authenticate(
       activity = activity,
+      subtitle = methodLabel,
       onSuccess = onUnlockSuccess,
       onFallbackPin = {},
       onError = { msg -> errorMsg = msg },
     )
   }
 
-  LaunchedEffect(securitySettings.preferredMethod) {
-    if (securitySettings.preferredMethod != LockMethod.PIN && capabilities.canUseBiometric) {
+  LaunchedEffect(securitySettings.preferredMethod, capabilities.canUseBiometric) {
+    if (!biometricAutoTriggered && securitySettings.preferredMethod != LockMethod.PIN && capabilities.canUseBiometric) {
+      biometricAutoTriggered = true
+      delay(180L)
       launchBiometricIfAvailable()
     }
   }
@@ -1564,7 +2286,7 @@ fun AppLockScreen(
     ) {
       Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(modifier = Modifier.height(20.dp))
-        val lockEmblemReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_1794808521071, sizePx = 192)
+        val lockEmblemReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_uploaded, sizePx = 192)
         AsyncImage(
           model = lockEmblemReq,
           contentDescription = "EVORIA Terkunci",
@@ -1575,6 +2297,17 @@ fun AppLockScreen(
         Text("EVORIA Terkunci", style = MaterialTheme.typography.headlineLarge, color = tokens.inkText)
         Spacer(modifier = Modifier.height(4.dp))
         Text("Masukkan PIN 6 angka untuk membuka ruang kenanganmu", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText, textAlign = TextAlign.Center)
+        if (capabilities.canUseBiometric && securitySettings.preferredMethod != LockMethod.PIN) {
+          Spacer(modifier = Modifier.height(6.dp))
+          TextButton(onClick = { launchBiometricIfAvailable() }) {
+            Text(
+              text =
+                if (securitySettings.preferredMethod == LockMethod.FACE) "Ketuk untuk Face Unlock"
+                else "Ketuk untuk Sidik Jari",
+              color = tokens.primaryTerracotta,
+            )
+          }
+        }
       }
 
       // 6-Dot PIN indicator
@@ -2392,20 +3125,13 @@ fun AboutEvoriaScreen(
               verticalAlignment = Alignment.CenterVertically,
               horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-              Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = tokens.primaryTerracotta,
-                shadowElevation = 4.dp,
-                modifier = Modifier.size(62.dp),
-              ) {
-                Box(contentAlignment = Alignment.Center) {
-                  Text(
-                    text = "E",
-                    style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                  )
-                }
-              }
+              val aboutLogoReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_uploaded, sizePx = 192)
+              AsyncImage(
+                model = aboutLogoReq,
+                contentDescription = "Logo EVORIA",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(62.dp).clip(RoundedCornerShape(18.dp)),
+              )
               Column(modifier = Modifier.weight(1f)) {
                 Text(
                   text = "EVORIA",
@@ -2434,33 +3160,64 @@ fun AboutEvoriaScreen(
           }
         }
 
-        // Developer Card
+        // Developer Card with looping uploaded video background + gradient readability scrim
         item {
-          EvoriaCard(elevated = true) {
-            Text(
-              text = "DEVELOPER",
-              style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-              color = tokens.primaryTerracotta,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-              text = "RAFFA AULIA MUSYAWAL",
-              style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-              color = tokens.inkText,
-              modifier = Modifier.testTag("about_developer_name"),
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-              text = "Kreator & Pengembang Aplikasi EVORIA",
-              style = MaterialTheme.typography.titleSmall,
-              color = tokens.mutedText,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-              text = "Dibangun dengan Jetpack Compose & Material Design 3 untuk menyimpan foto, album, jurnal refleksi, kapsul waktu, dan soundtrack penuh bermakna.",
-              style = MaterialTheme.typography.bodySmall,
-              color = tokens.mutedText,
-            )
+          val devVideoUri =
+            remember(context.packageName) {
+              "android.resource://${context.packageName}/${R.raw.dev_card_purple_wolf}"
+            }
+          Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF1A1224),
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
+            border = BorderStroke(1.dp, tokens.accentPeach.copy(alpha = 0.45f)),
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)),
+          ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+              EvoriaLoopingVideoSurface(
+                videoUri = devVideoUri,
+                modifier = Modifier.matchParentSize(),
+              )
+              Box(
+                modifier =
+                  Modifier
+                    .matchParentSize()
+                    .background(
+                      Brush.verticalGradient(
+                        0.0f to Color(0xD6120D1A),
+                        0.48f to Color(0xAA191124),
+                        1.0f to Color(0xE0110B18),
+                      )
+                    )
+              )
+              Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+                Text(
+                  text = "DEVELOPER",
+                  style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                  color = Color(0xFFF6C6AD),
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                  text = "RAFFA AULIA MUSYAWAL",
+                  style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                  color = Color.White,
+                  modifier = Modifier.testTag("about_developer_name"),
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                  text = "Kreator & Pengembang Aplikasi EVORIA",
+                  style = MaterialTheme.typography.titleSmall,
+                  color = Color.White.copy(alpha = 0.9f),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                  text = "Dibangun dengan Jetpack Compose & Material Design 3 untuk menyimpan foto, album, jurnal refleksi, kapsul waktu, dan soundtrack penuh bermakna.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = Color.White.copy(alpha = 0.82f),
+                )
+              }
+            }
           }
         }
 

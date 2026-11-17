@@ -121,6 +121,23 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidSharedMusic(data) {
+      return data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+             data.recipientUid is string && data.recipientUid.size() >= 1 && data.recipientUid.size() <= 128 &&
+             data.senderUid != data.recipientUid &&
+             data.memberUids is list && data.memberUids.size() == 2 &&
+             data.kind in ['track', 'playlist'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             isOptionalString(data, 'subtitle', 300) &&
+             isOptionalString(data, 'externalUrl', 500) &&
+             isOptionalString(data, 'coverUrl', 500) &&
+             data.tracksJson is string && data.tracksJson.size() >= 2 && data.tracksJson.size() <= 45000 &&
+             data.status in ['pending', 'accepted', 'declined', 'revoked'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     function isValidSharedReflection(data) {
       return data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
              data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
@@ -353,6 +370,43 @@ service cloud.firestore {
                          );
 
         allow delete: if isValidId(coupleId) && isValidId(requestId) &&
+                         isCoupleMember(coupleId) &&
+                         existing().senderUid == request.auth.uid;
+      }
+
+      match /shared_music/{musicShareId} {
+        allow get: if isValidId(coupleId) && isValidId(musicShareId) && isCoupleMember(coupleId);
+        allow list: if isSignedIn() && isValidId(coupleId) && request.auth.uid in existing().memberUids;
+
+        allow create: if isValidId(coupleId) && isValidId(musicShareId) &&
+                         isCoupleMember(coupleId) &&
+                         incoming().senderUid == request.auth.uid &&
+                         incoming().status == 'pending' &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['senderUid', 'senderName', 'recipientUid', 'memberUids', 'kind', 'title', 'tracksJson', 'status', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['senderUid', 'senderName', 'recipientUid', 'memberUids', 'kind', 'title', 'subtitle', 'externalUrl', 'coverUrl', 'tracksJson', 'status', 'createdAt', 'updatedAt']) &&
+                         isValidSharedMusic(incoming());
+
+        allow update: if isValidId(coupleId) && isValidId(musicShareId) &&
+                         isCoupleMember(coupleId) &&
+                         isValidSharedMusic(incoming()) &&
+                         existing().status == 'pending' &&
+                         incoming().senderUid == existing().senderUid &&
+                         incoming().recipientUid == existing().recipientUid &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().kind == existing().kind &&
+                         incoming().tracksJson == existing().tracksJson &&
+                         incoming().createdAt == existing().createdAt &&
+                         (
+                           (existing().recipientUid == request.auth.uid &&
+                            incoming().status in ['accepted', 'declined'] &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+                           (existing().senderUid == request.auth.uid &&
+                            incoming().status == 'revoked' &&
+                            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+                         );
+
+        allow delete: if isValidId(coupleId) && isValidId(musicShareId) &&
                          isCoupleMember(coupleId) &&
                          existing().senderUid == request.auth.uid;
       }

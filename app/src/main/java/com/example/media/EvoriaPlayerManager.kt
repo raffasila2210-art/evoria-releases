@@ -84,20 +84,44 @@ class EvoriaPlayerManager(context: Context) {
   private val _youtubeCommands = MutableSharedFlow<YouTubePlayerCommand>(extraBufferCapacity = 16)
   val youtubeCommands: SharedFlow<YouTubePlayerCommand> = _youtubeCommands.asSharedFlow()
 
+  init {
+    EvoriaPlaybackControlBus.onAction = { action ->
+      scope.launch {
+        when (action) {
+          EvoriaPlaybackControlBus.ACTION_PLAY_PAUSE -> togglePlayPause()
+          EvoriaPlaybackControlBus.ACTION_NEXT -> next()
+          EvoriaPlaybackControlBus.ACTION_PREV -> previous()
+          EvoriaPlaybackControlBus.ACTION_STOP -> stopPlayback()
+        }
+      }
+    }
+  }
+
+  private fun updateStateAndNotify(transform: (MusicPlayerState) -> MusicPlayerState) {
+    val next = transform(_state.value)
+    val trackChanged = next.currentTrack?.id != _state.value.currentTrack?.id
+    val playChanged = next.isPlaying != _state.value.isPlaying
+    _state.value = next
+    if (trackChanged || playChanged) {
+      EvoriaPlaybackService.syncPlayback(appContext, next)
+    }
+  }
+
   fun setQueueAndPlay(tracks: List<TrackEntity>, startTrackId: String? = null, resumePosMs: Long = 0L) {
     if (tracks.isEmpty()) return
     val target = tracks.firstOrNull { it.id == startTrackId } ?: tracks.first()
 
     // 1. Local offline full audio track takes priority if explicitly linked
     if (target.mediaUri.isNotBlank() && !target.mediaUri.startsWith("http")) {
-      _state.value =
-        _state.value.copy(
+      updateStateAndNotify {
+        it.copy(
           queue = tracks,
           currentTrack = target,
           isYouTubeMode = false,
           activeYouTubeVideoId = null,
           errorMessage = null,
         )
+      }
       runCatching {
           player.setMediaItem(MediaItem.fromUri(Uri.parse(target.mediaUri)))
           player.prepare()
@@ -105,18 +129,20 @@ class EvoriaPlayerManager(context: Context) {
           player.play()
         }
         .onFailure {
-          _state.value = _state.value.copy(isPlaying = false, errorMessage = "Berkas audio lokal tidak dapat diputar.")
+          updateStateAndNotify {
+            it.copy(isPlaying = false, errorMessage = "Berkas audio lokal tidak dapat diputar.")
+          }
         }
       return
     }
 
-    // 2. Full YouTube video track resolved via YouTube Data API v3
+    // 2. Full YouTube video track resolved via YouTube Data API / in-app bridge
     val ytId = target.youtubeVideoId?.takeIf { it.isNotBlank() }
     if (ytId != null) {
       stopProgressPolling()
       runCatching { player.pause() }
-      _state.value =
-        _state.value.copy(
+      updateStateAndNotify {
+        it.copy(
           queue = tracks,
           currentTrack = target,
           isPlaying = true,
@@ -126,6 +152,7 @@ class EvoriaPlayerManager(context: Context) {
           activeYouTubeVideoId = ytId,
           errorMessage = null,
         )
+      }
       _youtubeCommands.tryEmit(YouTubePlayerCommand.Load(ytId, resumePosMs / 1000f))
       return
     }
@@ -133,8 +160,8 @@ class EvoriaPlayerManager(context: Context) {
     // 3. No local file and no YouTube match yet
     stopProgressPolling()
     runCatching { player.pause() }
-    _state.value =
-      _state.value.copy(
+    updateStateAndNotify {
+      it.copy(
         queue = tracks,
         currentTrack = target,
         isPlaying = false,
@@ -144,11 +171,12 @@ class EvoriaPlayerManager(context: Context) {
         activeYouTubeVideoId = null,
         errorMessage =
           if (target.sourceType == "spotify") {
-            "Lagu YouTube belum dicocokkan untuk trek ini. Ketuk 'Cocokkan YouTube' atau tautkan MP3 lokal."
+            "Sedang menyiapkan audio YouTube untuk trek ini. Ketuk 'Cari YouTube' atau tautkan MP3 lokal bila belum muncul."
           } else {
             "Berkas audio belum ditautkan untuk lagu ini."
           },
       )
+    }
   }
 
   fun togglePlayPause() {
@@ -156,7 +184,7 @@ class EvoriaPlayerManager(context: Context) {
     val track = cur.currentTrack ?: return
     if (cur.isYouTubeMode && !cur.activeYouTubeVideoId.isNullOrBlank()) {
       val nextPlaying = !cur.isPlaying
-      _state.value = cur.copy(isPlaying = nextPlaying)
+      updateStateAndNotify { it.copy(isPlaying = nextPlaying) }
       _youtubeCommands.tryEmit(if (nextPlaying) YouTubePlayerCommand.Play else YouTubePlayerCommand.Pause)
       return
     }
@@ -170,9 +198,25 @@ class EvoriaPlayerManager(context: Context) {
     }
     if (player.isPlaying) {
       player.pause()
+      updateStateAndNotify { it.copy(isPlaying = false) }
     } else {
       player.play()
+      updateStateAndNotify { it.copy(isPlaying = true) }
     }
+  }
+
+  fun stopPlayback() {
+    stopProgressPolling()
+    if (_state.value.isYouTubeMode) {
+      _youtubeCommands.tryEmit(YouTubePlayerCommand.Pause)
+    }
+    runCatching {
+      player.pause()
+      player.stop()
+      player.clearMediaItems()
+    }
+    _state.value = MusicPlayerState()
+    EvoriaPlaybackService.stopPlayback(appContext)
   }
 
   fun seekTo(positionMs: Long) {
@@ -189,12 +233,15 @@ class EvoriaPlayerManager(context: Context) {
   fun onYouTubePlaybackUpdate(isPlaying: Boolean, positionMs: Long, durationMs: Long) {
     if (!_state.value.isYouTubeMode) return
     val resolvedDur = if (durationMs > 0L) durationMs else _state.value.durationMs
-    _state.value =
-      _state.value.copy(
+    val clearedError = if (isPlaying || positionMs > 0L) null else _state.value.errorMessage
+    updateStateAndNotify {
+      it.copy(
         isPlaying = isPlaying,
         positionMs = positionMs.coerceAtLeast(0L),
         durationMs = resolvedDur,
+        errorMessage = clearedError,
       )
+    }
   }
 
   fun onYouTubeVideoEnded() {
@@ -205,14 +252,13 @@ class EvoriaPlayerManager(context: Context) {
 
   fun onYouTubePlayerError(message: String) {
     if (_state.value.isYouTubeMode) {
-      _state.value = _state.value.copy(isPlaying = false, errorMessage = message)
+      updateStateAndNotify { it.copy(isPlaying = false, errorMessage = message) }
     }
   }
 
+  @Suppress("UNUSED")
   fun pauseYouTubeIfLeavingPlayer() {
-    if (_state.value.isYouTubeMode && _state.value.isPlaying) {
-      _state.value = _state.value.copy(isPlaying = false)
-    }
+    // Background playback is preserved when navigating outside FullMusicPlayerScreen.
   }
 
   fun next() {
@@ -266,11 +312,7 @@ class EvoriaPlayerManager(context: Context) {
     val cur = _state.value
     val remainingQueue = cur.queue.filterNot { it.playlistId == playlistId }
     if (cur.currentTrack?.playlistId == playlistId) {
-      stopProgressPolling()
-      runCatching {
-        player.stop()
-        player.clearMediaItems()
-      }
+      stopPlayback()
       _state.value = MusicPlayerState(queue = remainingQueue)
     } else if (remainingQueue.size != cur.queue.size) {
       _state.value = cur.copy(queue = remainingQueue)
@@ -279,6 +321,8 @@ class EvoriaPlayerManager(context: Context) {
 
   fun release() {
     stopProgressPolling()
+    EvoriaPlaybackControlBus.onAction = null
+    EvoriaPlaybackService.stopPlayback(appContext)
     runCatching { player.release() }
   }
 }

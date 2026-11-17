@@ -128,7 +128,7 @@ fun OnboardingAndSignInScreen(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          val logoReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_1794808521071, sizePx = 128)
+          val logoReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_uploaded, sizePx = 128)
           AsyncImage(
             model = logoReq,
             contentDescription = "Logo EVORIA",
@@ -213,7 +213,7 @@ fun OnboardingAndSignInScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
           ) {
-            val emblemReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_1794808521071, sizePx = 220)
+            val emblemReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_uploaded, sizePx = 220)
             AsyncImage(
               model = emblemReq,
               contentDescription = "Emblem EVORIA",

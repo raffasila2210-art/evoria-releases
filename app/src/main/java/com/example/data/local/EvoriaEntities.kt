@@ -1,9 +1,13 @@
 package com.example.data.local
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "albums")
+@Entity(
+  tableName = "albums",
+  indices = [Index(value = ["ownerUid"])],
+)
 data class LocalAlbumEntity(
   @PrimaryKey val id: String,
   val ownerUid: String,
@@ -16,7 +20,32 @@ data class LocalAlbumEntity(
   val updatedAtMillis: Long,
 )
 
-@Entity(tableName = "memories")
+@Entity(
+  tableName = "kenangan_collections",
+  indices = [Index(value = ["ownerUid"])],
+)
+data class KenanganCollectionEntity(
+  @PrimaryKey val id: String,
+  val ownerUid: String,
+  val title: String,
+  val description: String = "",
+  val albumIdsCsv: String = "",
+  val coverUri: String? = null,
+  val visibility: String = "private", // "private" | "shared"
+  val createdAtMillis: Long,
+  val updatedAtMillis: Long,
+) {
+  fun albumIdList(): List<String> =
+    albumIdsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+}
+
+@Entity(
+  tableName = "memories",
+  indices = [
+    Index(value = ["ownerUid"]),
+    Index(value = ["albumId"]),
+  ],
+)
 data class LocalMemoryEntity(
   @PrimaryKey val id: String,
   val ownerUid: String,
@@ -52,7 +81,10 @@ data class UploadJobEntity(
   val updatedAtMillis: Long,
 )
 
-@Entity(tableName = "journals")
+@Entity(
+  tableName = "journals",
+  indices = [Index(value = ["ownerUid"])],
+)
 data class JournalEntity(
   @PrimaryKey val id: String,
   val ownerUid: String,
@@ -66,7 +98,10 @@ data class JournalEntity(
   val updatedAtMillis: Long,
 )
 
-@Entity(tableName = "letters")
+@Entity(
+  tableName = "letters",
+  indices = [Index(value = ["ownerUid"])],
+)
 data class LetterEntity(
   @PrimaryKey val id: String,
   val ownerUid: String,
@@ -80,7 +115,10 @@ data class LetterEntity(
   val updatedAtMillis: Long,
 )
 
-@Entity(tableName = "moods")
+@Entity(
+  tableName = "moods",
+  indices = [Index(value = ["ownerUid"])],
+)
 data class MoodEntity(
   @PrimaryKey val id: String,
   val ownerUid: String,
@@ -89,7 +127,10 @@ data class MoodEntity(
   val recordedAtMillis: Long,
 )
 
-@Entity(tableName = "reflection_answers")
+@Entity(
+  tableName = "reflection_answers",
+  indices = [Index(value = ["ownerUid"])],
+)
 data class ReflectionAnswerEntity(
   @PrimaryKey val id: String,
   val ownerUid: String,
@@ -99,7 +140,10 @@ data class ReflectionAnswerEntity(
   val answeredAtMillis: Long,
 )
 
-@Entity(tableName = "time_capsules")
+@Entity(
+  tableName = "time_capsules",
+  indices = [Index(value = ["ownerUid"])],
+)
 data class TimeCapsuleEntity(
   @PrimaryKey val id: String,
   val ownerUid: String,
@@ -127,7 +171,10 @@ data class PlaylistEntity(
   val coverUrl: String? = null,
 )
 
-@Entity(tableName = "tracks")
+@Entity(
+  tableName = "tracks",
+  indices = [Index(value = ["playlistId"])],
+)
 data class TrackEntity(
   @PrimaryKey val id: String,
   val playlistId: String,

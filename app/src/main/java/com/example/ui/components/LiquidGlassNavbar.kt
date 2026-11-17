@@ -72,6 +72,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -281,6 +282,19 @@ fun computeNavbarWaistPinchPx(
   return maxPinchPx * bell * endTaper
 }
 
+private class LiquidGlassPathPool {
+  val pillPath = Path()
+  val shadowPath = Path()
+  val topReflectionPath = Path()
+  val bottomReflectionPath = Path()
+  val capsulePath = Path()
+  val capsuleShadowPath = Path()
+  val outerPrismPath = Path()
+  val ghostRedPath = Path()
+  val ghostCyanPath = Path()
+  val innerMeniscusPath = Path()
+}
+
 private fun buildPinchedNavbarPillPath(
   pillLeft: Float,
   pillTop: Float,
@@ -290,6 +304,7 @@ private fun buildPinchedNavbarPillPath(
   capsuleHalfWidth: Float,
   maxPinchPx: Float,
   insetPx: Float = 0f,
+  outPath: Path = Path(),
 ): Path {
   val l = pillLeft + insetPx
   val t = pillTop + insetPx
@@ -300,16 +315,16 @@ private fun buildPinchedNavbarPillPath(
   val rad = (h / 2f).coerceAtMost(w / 2f)
   val cy = (t + b) / 2f
 
-  val path = Path()
+  outPath.reset()
   if (maxPinchPx <= 0.15f) {
-    path.addRoundRect(RoundRect(Rect(l, t, r, b), CornerRadius(rad, rad)))
-    return path
+    outPath.addRoundRect(RoundRect(Rect(l, t, r, b), CornerRadius(rad, rad)))
+    return outPath
   }
 
   val capX = rad * 0.88f
   val spanLeft = l + capX
   val spanRight = (r - capX).coerceAtLeast(spanLeft + 2f)
-  val steps = 44
+  val steps = 36
 
   fun pinchAt(x: Float): Float =
     computeNavbarWaistPinchPx(
@@ -326,10 +341,8 @@ private fun buildPinchedNavbarPillPath(
   val startPinchRight = pinchAt(spanRight)
   val kCap = rad * 0.5522848f
 
-  // Start at left apex
-  path.moveTo(l, cy)
-  // Left upper quarter curve into pinched upper run
-  path.cubicTo(
+  outPath.moveTo(l, cy)
+  outPath.cubicTo(
     l,
     cy - kCap,
     spanLeft - kCap * 0.72f,
@@ -338,16 +351,14 @@ private fun buildPinchedNavbarPillPath(
     t + startPinchLeft,
   )
 
-  // Upper pinched span
   for (i in 1..steps) {
     val frac = i / steps.toFloat()
     val x = spanLeft + (spanRight - spanLeft) * frac
     val y = t + pinchAt(x)
-    path.lineTo(x, y)
+    outPath.lineTo(x, y)
   }
 
-  // Right upper quarter curve to right apex
-  path.cubicTo(
+  outPath.cubicTo(
     spanRight + kCap * 0.72f,
     t + startPinchRight,
     r,
@@ -356,8 +367,7 @@ private fun buildPinchedNavbarPillPath(
     cy,
   )
 
-  // Right lower quarter curve into pinched lower run
-  path.cubicTo(
+  outPath.cubicTo(
     r,
     cy + kCap,
     spanRight + kCap * 0.72f,
@@ -366,16 +376,14 @@ private fun buildPinchedNavbarPillPath(
     b - startPinchRight,
   )
 
-  // Lower pinched span (right -> left)
   for (i in 1..steps) {
     val frac = i / steps.toFloat()
     val x = spanRight - (spanRight - spanLeft) * frac
     val y = b - pinchAt(x)
-    path.lineTo(x, y)
+    outPath.lineTo(x, y)
   }
 
-  // Left lower quarter curve back to left apex
-  path.cubicTo(
+  outPath.cubicTo(
     spanLeft - kCap * 0.72f,
     b - startPinchLeft,
     l,
@@ -383,8 +391,8 @@ private fun buildPinchedNavbarPillPath(
     l,
     cy,
   )
-  path.close()
-  return path
+  outPath.close()
+  return outPath
 }
 
 private fun buildPinchedEdgeHighlightPath(
@@ -397,29 +405,32 @@ private fun buildPinchedEdgeHighlightPath(
   maxPinchPx: Float,
   isTopEdge: Boolean,
   insetFromEdgePx: Float,
+  outPath: Path = Path(),
 ): Path {
   val l = pillLeft + insetFromEdgePx
   val r = (pillLeft + pillWidth - insetFromEdgePx).coerceAtLeast(l + 4f)
   val rad = (pillHeight / 2f).coerceAtMost(pillWidth / 2f)
   val spanLeft = l + rad * 0.45f
   val spanRight = (r - rad * 0.45f).coerceAtLeast(spanLeft + 2f)
-  val steps = 40
+  val steps = 32
 
-  val path = Path()
+  outPath.reset()
   for (i in 0..steps) {
     val frac = i / steps.toFloat()
     val x = spanLeft + (spanRight - spanLeft) * frac
     val pinch =
-      computeNavbarWaistPinchPx(
-        xPx = x,
-        capsuleCenterX = capsuleCenterX,
-        capsuleHalfWidthPx = capsuleHalfWidth,
-        maxPinchPx = maxPinchPx,
-        pillLeftPx = pillLeft,
-        pillRightPx = pillLeft + pillWidth,
-        pillRadiusPx = rad,
-      ).coerceAtMost(pillHeight * 0.24f)
-    // Edge curve gently dips down at stadium ends
+      if (maxPinchPx <= 0.15f) 0f
+      else {
+        computeNavbarWaistPinchPx(
+          xPx = x,
+          capsuleCenterX = capsuleCenterX,
+          capsuleHalfWidthPx = capsuleHalfWidth,
+          maxPinchPx = maxPinchPx,
+          pillLeftPx = pillLeft,
+          pillRightPx = pillLeft + pillWidth,
+          pillRadiusPx = rad,
+        ).coerceAtMost(pillHeight * 0.24f)
+      }
     val endFade =
       when {
         x < pillLeft + rad -> {
@@ -435,9 +446,9 @@ private fun buildPinchedEdgeHighlightPath(
     val y =
       if (isTopEdge) pillTop + insetFromEdgePx + pinch + endFade
       else pillTop + pillHeight - insetFromEdgePx - pinch - endFade
-    if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    if (i == 0) outPath.moveTo(x, y) else outPath.lineTo(x, y)
   }
-  return path
+  return outPath
 }
 
 private fun buildConvexJellyCapsulePath(
@@ -449,31 +460,30 @@ private fun buildConvexJellyCapsulePath(
   dirBias: Float,
   crownPx: Float,
   leanPx: Float,
+  outPath: Path = Path(),
 ): Path {
   val w = width.coerceAtLeast(4f)
   val h = height.coerceAtLeast(4f)
   val right = left + w
   val bottom = top + h
-  val cx = left + w / 2f
   val cy = top + h / 2f
   val r = (h / 2f).coerceAtMost(w * 0.47f)
 
-  val path = Path()
+  outPath.reset()
   val clampedBulge = bulgeProgress.coerceIn(0f, 1.2f)
   if (clampedBulge < 0.01f && abs(dirBias) < 0.01f) {
-    path.addRoundRect(RoundRect(Rect(left, top, right, bottom), CornerRadius(r, r)))
-    return path
+    outPath.addRoundRect(RoundRect(Rect(left, top, right, bottom), CornerRadius(r, r)))
+    return outPath
   }
 
   val k = r * 0.5522848f
   val crown = crownPx * clampedBulge
   val lean = leanPx * clampedBulge
-  // Subtle jelly asymmetry on leading/trailing caps during fast drag
   val trailExtra = if (dirBias > 0f) dirBias * 2.4f else 0f
   val leadExtra = if (dirBias < 0f) -dirBias * 2.4f else 0f
 
-  path.moveTo(left - trailExtra * 0.4f, cy)
-  path.cubicTo(
+  outPath.moveTo(left - trailExtra * 0.4f, cy)
+  outPath.cubicTo(
     left - trailExtra * 0.35f,
     cy - k,
     left + r - k,
@@ -481,8 +491,7 @@ private fun buildConvexJellyCapsulePath(
     left + r,
     top,
   )
-  // Gently crowned upper glass dome
-  path.cubicTo(
+  outPath.cubicTo(
     left + r + (w - 2f * r) * 0.28f + lean * 0.4f,
     top - crown,
     right - r - (w - 2f * r) * 0.28f + lean * 0.4f,
@@ -490,7 +499,7 @@ private fun buildConvexJellyCapsulePath(
     right - r,
     top,
   )
-  path.cubicTo(
+  outPath.cubicTo(
     right - r + k,
     top,
     right + leadExtra * 0.35f,
@@ -498,7 +507,7 @@ private fun buildConvexJellyCapsulePath(
     right + leadExtra * 0.4f,
     cy,
   )
-  path.cubicTo(
+  outPath.cubicTo(
     right + leadExtra * 0.35f,
     cy + k,
     right - r + k,
@@ -506,8 +515,7 @@ private fun buildConvexJellyCapsulePath(
     right - r,
     bottom,
   )
-  // Gently crowned lower glass dome
-  path.cubicTo(
+  outPath.cubicTo(
     right - r - (w - 2f * r) * 0.28f + lean * 0.4f,
     bottom + crown,
     left + r + (w - 2f * r) * 0.28f + lean * 0.4f,
@@ -515,7 +523,7 @@ private fun buildConvexJellyCapsulePath(
     left + r,
     bottom,
   )
-  path.cubicTo(
+  outPath.cubicTo(
     left + r - k,
     bottom,
     left - trailExtra * 0.35f,
@@ -523,8 +531,8 @@ private fun buildConvexJellyCapsulePath(
     left - trailExtra * 0.4f,
     cy,
   )
-  path.close()
-  return path
+  outPath.close()
+  return outPath
 }
 
 @Composable
@@ -540,17 +548,107 @@ fun rememberSystemReducedMotion(userReducedMotionOverride: Boolean): Boolean {
   return userReducedMotionOverride || animatorScale == 0f
 }
 
+private class CachedPillBrushes(
+  val pillBgBrush: Brush,
+  val sheenBrush: Brush,
+  val borderBrush: Brush,
+  val topReflectionBrush: Brush,
+  val bottomReflectionBrush: Brush,
+  val underGlowBaseRadius: Float,
+  val underGlowBrush: Brush,
+  val outerPrismBrush: Brush,
+  val domeBaseRadius: Float,
+  val domeBrush: Brush,
+  val leftAuroraCenter: Offset,
+  val leftAuroraRadius: Float,
+  val leftAuroraBrush: Brush,
+  val midAuroraCenter: Offset,
+  val midAuroraRadius: Float,
+  val midAuroraBrush: Brush,
+  val rightAuroraCenter: Offset,
+  val rightAuroraRadius: Float,
+  val rightAuroraBrush: Brush,
+)
+
+private class DynamicCapsuleBrushCache {
+  private var lastKey: Int = 0
+  private var lastTop: Float = Float.NaN
+  private var lastHeight: Float = Float.NaN
+  private var lastBulgeQuantized: Int = -1
+  private var lastGlowQuantized: Int = -1
+  var bodyBrush: Brush? = null
+  var meniscusBrush: Brush? = null
+  var rimBrush: Brush? = null
+
+  fun updateIfNeeded(
+    styleKey: Int,
+    capsuleTop: Float,
+    capsuleHeight: Float,
+    bulgeClamped: Float,
+    glow: Float,
+    bodyTop: Color,
+    bodyBottom: Color,
+    isDarkLook: Boolean,
+    accentPeach: Color,
+  ) {
+    val bulgeQ = (bulgeClamped * 100f).toInt()
+    val glowQ = (glow * 100f).toInt()
+    if (
+      bodyBrush != null &&
+        lastKey == styleKey &&
+        abs(lastTop - capsuleTop) < 0.25f &&
+        abs(lastHeight - capsuleHeight) < 0.25f &&
+        lastBulgeQuantized == bulgeQ &&
+        lastGlowQuantized == glowQ
+    ) {
+      return
+    }
+    lastKey = styleKey
+    lastTop = capsuleTop
+    lastHeight = capsuleHeight
+    lastBulgeQuantized = bulgeQ
+    lastGlowQuantized = glowQ
+
+    val endY = (capsuleTop + capsuleHeight).coerceAtLeast(capsuleTop + 1f)
+    bodyBrush =
+      Brush.verticalGradient(
+        colors = listOf(bodyTop, bodyBottom),
+        startY = capsuleTop,
+        endY = endY,
+      )
+    meniscusBrush =
+      Brush.verticalGradient(
+        colors =
+          listOf(
+            Color.Black.copy(alpha = 0.22f * bulgeClamped),
+            Color.Transparent,
+            Color.Black.copy(alpha = 0.16f * bulgeClamped),
+          ),
+        startY = capsuleTop,
+        endY = endY,
+      )
+    rimBrush =
+      Brush.verticalGradient(
+        colors =
+          listOf(
+            Color.White.copy(alpha = if (isDarkLook) 0.62f + bulgeClamped * 0.26f else 0.96f),
+            accentPeach.copy(alpha = (0.34f + bulgeClamped * 0.44f).coerceAtMost(0.88f)),
+          ),
+        startY = capsuleTop,
+        endY = endY,
+      )
+  }
+}
+
 private fun DrawScope.drawPinchedNavbarGlassCard(
+  pathPool: LiquidGlassPathPool,
+  cachedPillBrushes: CachedPillBrushes,
   pillLeft: Float,
   pillTop: Float,
   pillWidth: Float,
   pillHeight: Float,
-  pillBgColors: List<Color>,
   isDarkLook: Boolean,
-  accentPeach: Color,
   primaryTerracotta: Color,
-  glassSpecularTop: Color,
-  glassSpecularBottom: Color,
   capsuleCenterX: Float,
   capsuleHalfWidth: Float,
   maxPinchPx: Float,
@@ -566,9 +664,9 @@ private fun DrawScope.drawPinchedNavbarGlassCard(
       capsuleHalfWidth = capsuleHalfWidth,
       maxPinchPx = maxPinchPx,
       insetPx = 0f,
+      outPath = pathPool.pillPath,
     )
 
-  // Soft ambient shadow beneath the pinched glass pill card
   val shadowPath =
     buildPinchedNavbarPillPath(
       pillLeft = pillLeft - 1.dp.toPx(),
@@ -578,6 +676,7 @@ private fun DrawScope.drawPinchedNavbarGlassCard(
       capsuleCenterX = capsuleCenterX,
       capsuleHalfWidth = capsuleHalfWidth,
       maxPinchPx = maxPinchPx * 0.7f,
+      outPath = pathPool.shadowPath,
     )
   drawPath(
     path = shadowPath,
@@ -586,103 +685,40 @@ private fun DrawScope.drawPinchedNavbarGlassCard(
       else primaryTerracotta.copy(alpha = 0.16f),
   )
 
-  // Clip frosted backdrop glow + aurora glass haze strictly inside the pinched card path
   clipPath(pillPath) {
     drawRect(
-      brush =
-        Brush.verticalGradient(
-          colors = pillBgColors,
-          startY = pillTop,
-          endY = pillTop + pillHeight,
-        ),
+      brush = cachedPillBrushes.pillBgBrush,
       topLeft = Offset(pillLeft, pillTop),
       size = Size(pillWidth, pillHeight),
     )
-
-    // Diffused multi-hue translucent frosted aurora behind the smoked glass (replicates backdrop bleed)
-    val leftCenter = Offset(pillLeft + pillWidth * 0.24f, pillTop + pillHeight * 0.34f)
-    val leftRadius = (pillWidth * 0.36f).coerceAtLeast(1f)
     drawCircle(
-      brush =
-        Brush.radialGradient(
-          colors =
-            listOf(
-              accentPeach.copy(alpha = if (isDarkLook) 0.20f else 0.26f),
-              accentPeach.copy(alpha = if (isDarkLook) 0.07f else 0.09f),
-              Color.Transparent,
-            ),
-          center = leftCenter,
-          radius = leftRadius,
-        ),
-      center = leftCenter,
-      radius = leftRadius,
+      brush = cachedPillBrushes.leftAuroraBrush,
+      center = cachedPillBrushes.leftAuroraCenter,
+      radius = cachedPillBrushes.leftAuroraRadius,
     )
-
-    val midCenter = Offset(pillLeft + pillWidth * 0.56f, pillTop + pillHeight * 0.52f)
-    val midRadius = (pillWidth * 0.30f).coerceAtLeast(1f)
     drawCircle(
-      brush =
-        Brush.radialGradient(
-          colors =
-            listOf(
-              Color(0xFF4ECDC4).copy(alpha = if (isDarkLook) 0.14f else 0.11f),
-              Color.Transparent,
-            ),
-          center = midCenter,
-          radius = midRadius,
-        ),
-      center = midCenter,
-      radius = midRadius,
+      brush = cachedPillBrushes.midAuroraBrush,
+      center = cachedPillBrushes.midAuroraCenter,
+      radius = cachedPillBrushes.midAuroraRadius,
     )
-
-    val rightCenter = Offset(pillLeft + pillWidth * 0.82f, pillTop + pillHeight * 0.68f)
-    val rightRadius = (pillWidth * 0.34f).coerceAtLeast(1f)
     drawCircle(
-      brush =
-        Brush.radialGradient(
-          colors =
-            listOf(
-              primaryTerracotta.copy(alpha = if (isDarkLook) 0.18f else 0.14f),
-              Color.Transparent,
-            ),
-          center = rightCenter,
-          radius = rightRadius,
-        ),
-      center = rightCenter,
-      radius = rightRadius,
+      brush = cachedPillBrushes.rightAuroraBrush,
+      center = cachedPillBrushes.rightAuroraCenter,
+      radius = cachedPillBrushes.rightAuroraRadius,
     )
-
-    // Horizontal frost sheen caught across the upper card curve
     drawRect(
-      brush =
-        Brush.verticalGradient(
-          colors =
-            listOf(
-              Color.White.copy(alpha = if (isDarkLook) 0.10f else 0.38f),
-              Color.Transparent,
-              primaryTerracotta.copy(alpha = if (isDarkLook) 0.08f else 0.05f),
-            ),
-          startY = pillTop,
-          endY = pillTop + pillHeight,
-        ),
+      brush = cachedPillBrushes.sheenBrush,
       topLeft = Offset(pillLeft, pillTop),
       size = Size(pillWidth, pillHeight),
     )
   }
 
-  // Outer perimeter glass border along the pinched contour
   drawPath(
     path = pillPath,
-    brush =
-      Brush.verticalGradient(
-        colors = listOf(glassSpecularTop, glassSpecularBottom),
-        startY = pillTop,
-        endY = pillTop + pillHeight,
-      ),
+    brush = cachedPillBrushes.borderBrush,
     style = Stroke(width = 1.05.dp.toPx(), join = StrokeJoin.Round),
   )
 
-  // Prominent pinched top & bottom specular glass reflections that visibly bend inward ("menciut")
   val topReflectionPath =
     buildPinchedEdgeHighlightPath(
       pillLeft = pillLeft,
@@ -694,20 +730,12 @@ private fun DrawScope.drawPinchedNavbarGlassCard(
       maxPinchPx = maxPinchPx,
       isTopEdge = true,
       insetFromEdgePx = 1.6.dp.toPx(),
+      outPath = pathPool.topReflectionPath,
     )
   drawPath(
     path = topReflectionPath,
-    brush =
-      Brush.horizontalGradient(
-        colors =
-          listOf(
-            Color.White.copy(alpha = (if (isDarkLook) 0.36f else 0.72f) + bulgeAlphaBoost * 0.22f),
-            accentPeach.copy(alpha = (if (isDarkLook) 0.28f else 0.48f) + bulgeAlphaBoost * 0.20f),
-            Color.White.copy(alpha = (if (isDarkLook) 0.32f else 0.65f) + bulgeAlphaBoost * 0.18f),
-          ),
-        startX = pillLeft,
-        endX = pillLeft + pillWidth,
-      ),
+    brush = cachedPillBrushes.topReflectionBrush,
+    alpha = (0.76f + bulgeAlphaBoost * 0.24f).coerceIn(0f, 1f),
     style = Stroke(width = (1.15f + bulgeAlphaBoost * 0.45f).dp.toPx(), cap = StrokeCap.Round),
   )
 
@@ -722,20 +750,12 @@ private fun DrawScope.drawPinchedNavbarGlassCard(
       maxPinchPx = maxPinchPx,
       isTopEdge = false,
       insetFromEdgePx = 1.7.dp.toPx(),
+      outPath = pathPool.bottomReflectionPath,
     )
   drawPath(
     path = bottomReflectionPath,
-    brush =
-      Brush.horizontalGradient(
-        colors =
-          listOf(
-            accentPeach.copy(alpha = (if (isDarkLook) 0.22f else 0.38f) + bulgeAlphaBoost * 0.16f),
-            Color.White.copy(alpha = (if (isDarkLook) 0.26f else 0.50f) + bulgeAlphaBoost * 0.18f),
-            accentPeach.copy(alpha = (if (isDarkLook) 0.22f else 0.38f) + bulgeAlphaBoost * 0.16f),
-          ),
-        startX = pillLeft,
-        endX = pillLeft + pillWidth,
-      ),
+    brush = cachedPillBrushes.bottomReflectionBrush,
+    alpha = (0.74f + bulgeAlphaBoost * 0.26f).coerceIn(0f, 1f),
     style = Stroke(width = (1.0f + bulgeAlphaBoost * 0.35f).dp.toPx(), cap = StrokeCap.Round),
   )
 }
@@ -763,6 +783,154 @@ private fun LiquidGlassVisualStageCanvas(
   chromaticDispersionDpState: State<Float>,
   directionalBiasState: State<Float>,
 ) {
+  val pathPool = remember { LiquidGlassPathPool() }
+  val dynamicCapsuleBrushes = remember { DynamicCapsuleBrushCache() }
+  val cachedPillBrushes =
+    remember(
+      totalWidthPx,
+      pillTopPx,
+      pillHeightPx,
+      slotWidthPx,
+      isDarkLook,
+      pillBgColors,
+      glassSpecularTop,
+      glassSpecularBottom,
+      accentPeach,
+      primaryTerracotta,
+    ) {
+      val pillWidth = totalWidthPx.coerceAtLeast(2f)
+      val leftCenter = Offset(pillWidth * 0.24f, pillTopPx + pillHeightPx * 0.34f)
+      val leftRadius = (pillWidth * 0.36f).coerceAtLeast(1f)
+      val midCenter = Offset(pillWidth * 0.56f, pillTopPx + pillHeightPx * 0.52f)
+      val midRadius = (pillWidth * 0.30f).coerceAtLeast(1f)
+      val rightCenter = Offset(pillWidth * 0.82f, pillTopPx + pillHeightPx * 0.68f)
+      val rightRadius = (pillWidth * 0.34f).coerceAtLeast(1f)
+      val underGlowBaseRadius = (slotWidthPx * 0.94f * 0.68f).coerceAtLeast(1f)
+      val domeBaseRadius = (slotWidthPx * 0.94f * 0.72f).coerceAtLeast(1f)
+      CachedPillBrushes(
+        pillBgBrush =
+          Brush.verticalGradient(
+            colors = pillBgColors,
+            startY = pillTopPx,
+            endY = pillTopPx + pillHeightPx,
+          ),
+        sheenBrush =
+          Brush.verticalGradient(
+            colors =
+              listOf(
+                Color.White.copy(alpha = if (isDarkLook) 0.10f else 0.38f),
+                Color.Transparent,
+                primaryTerracotta.copy(alpha = if (isDarkLook) 0.08f else 0.05f),
+              ),
+            startY = pillTopPx,
+            endY = pillTopPx + pillHeightPx,
+          ),
+        borderBrush =
+          Brush.verticalGradient(
+            colors = listOf(glassSpecularTop, glassSpecularBottom),
+            startY = pillTopPx,
+            endY = pillTopPx + pillHeightPx,
+          ),
+        topReflectionBrush =
+          Brush.horizontalGradient(
+            colors =
+              listOf(
+                Color.White.copy(alpha = if (isDarkLook) 0.56f else 0.94f),
+                accentPeach.copy(alpha = if (isDarkLook) 0.46f else 0.68f),
+                Color.White.copy(alpha = if (isDarkLook) 0.50f else 0.86f),
+              ),
+            startX = 0f,
+            endX = pillWidth,
+          ),
+        bottomReflectionBrush =
+          Brush.horizontalGradient(
+            colors =
+              listOf(
+                accentPeach.copy(alpha = if (isDarkLook) 0.38f else 0.54f),
+                Color.White.copy(alpha = if (isDarkLook) 0.44f else 0.70f),
+                accentPeach.copy(alpha = if (isDarkLook) 0.38f else 0.54f),
+              ),
+            startX = 0f,
+            endX = pillWidth,
+          ),
+        underGlowBaseRadius = underGlowBaseRadius,
+        underGlowBrush =
+          Brush.radialGradient(
+            colors =
+              listOf(
+                accentPeach.copy(alpha = 0.85f),
+                primaryTerracotta.copy(alpha = 0.42f),
+                Color.Transparent,
+              ),
+            center = Offset.Zero,
+            radius = underGlowBaseRadius,
+          ),
+        outerPrismBrush =
+          Brush.sweepGradient(
+            0.00f to Color(0xFFFFB48A).copy(alpha = 0.58f),
+            0.14f to Color(0xFF22D3EE).copy(alpha = 0.62f),
+            0.26f to Color(0xFF34D399).copy(alpha = 0.52f),
+            0.38f to Color(0xFFFF3B30).copy(alpha = 0.86f),
+            0.48f to Color(0xFFFF9500).copy(alpha = 0.82f),
+            0.56f to Color(0xFF22D3EE).copy(alpha = 0.78f),
+            0.66f to Color(0xFF2563EB).copy(alpha = 0.72f),
+            0.78f to Color(0xFFA855F7).copy(alpha = 0.55f),
+            0.90f to Color(0xFFFFE4D6).copy(alpha = 0.48f),
+            1.00f to Color(0xFFFFB48A).copy(alpha = 0.58f),
+            center = Offset.Zero,
+          ),
+        domeBaseRadius = domeBaseRadius,
+        domeBrush =
+          Brush.radialGradient(
+            colors =
+              listOf(
+                Color.White.copy(alpha = if (isDarkLook) 0.32f else 0.45f),
+                accentPeach.copy(alpha = 0.36f),
+                Color.Transparent,
+              ),
+            center = Offset.Zero,
+            radius = domeBaseRadius,
+          ),
+        leftAuroraCenter = leftCenter,
+        leftAuroraRadius = leftRadius,
+        leftAuroraBrush =
+          Brush.radialGradient(
+            colors =
+              listOf(
+                accentPeach.copy(alpha = if (isDarkLook) 0.20f else 0.26f),
+                accentPeach.copy(alpha = if (isDarkLook) 0.07f else 0.09f),
+                Color.Transparent,
+              ),
+            center = leftCenter,
+            radius = leftRadius,
+          ),
+        midAuroraCenter = midCenter,
+        midAuroraRadius = midRadius,
+        midAuroraBrush =
+          Brush.radialGradient(
+            colors =
+              listOf(
+                Color(0xFF4ECDC4).copy(alpha = if (isDarkLook) 0.14f else 0.11f),
+                Color.Transparent,
+              ),
+            center = midCenter,
+            radius = midRadius,
+          ),
+        rightAuroraCenter = rightCenter,
+        rightAuroraRadius = rightRadius,
+        rightAuroraBrush =
+          Brush.radialGradient(
+            colors =
+              listOf(
+                primaryTerracotta.copy(alpha = if (isDarkLook) 0.18f else 0.14f),
+                Color.Transparent,
+              ),
+            center = rightCenter,
+            radius = rightRadius,
+          ),
+      )
+    }
+
   Canvas(
     modifier = Modifier.fillMaxSize()
   ) {
@@ -776,8 +944,6 @@ private fun LiquidGlassVisualStageCanvas(
     val stretch = stretchFactorState.value
     val dirBias = directionalBiasState.value
 
-    // Volume-conserving jelly deformation: width expands slightly with drag velocity, height bulges
-    // prominently beyond the pill top/bottom on hold while squashing mildly during rapid drag
     val speedStretchExcess = (stretch - 1f).coerceAtLeast(0f)
     val bulgeWidthScale = 1f + 0.13f * bulgeClamped
     val bulgeHeightScale = (1f + 0.31f * bulge) * (1f - (speedStretchExcess * 0.22f).coerceAtMost(0.08f))
@@ -797,52 +963,41 @@ private fun LiquidGlassVisualStageCanvas(
     val capsuleTop = pillCenterY - capsuleHeight / 2f
     val capsuleCenterX = capsuleLeft + capsuleWidth / 2f
 
-    // 1. Pinch strength for the navbar card ("pantulan card navbar menjadi menciut")
     val maxPinchPx = (5.8.dp.toPx() * bulgeClamped * glassIntensity.dispersionMultiplier.coerceAtLeast(0.85f))
 
-    // 2. Subtle light glow directly beneath the active capsule (always faintly warm at rest, blooming on hold/drag)
     val underGlowAlpha = ((0.18f + glowRaw * 0.62f) * glassIntensity.glowMultiplier).coerceIn(0f, 0.92f)
     if (underGlowAlpha > 0.02f) {
       val underGlowCenter = Offset(capsuleCenterX, capsuleTop + capsuleHeight + 1.dp.toPx())
       val underGlowRadius = (capsuleWidth * 0.68f).coerceAtLeast(1f)
-      scale(scaleX = 1.22f, scaleY = 0.44f, pivot = underGlowCenter) {
+      val underGlowScale = (underGlowRadius / cachedPillBrushes.underGlowBaseRadius).coerceAtLeast(0.5f)
+      withTransform({
+        translate(underGlowCenter.x, underGlowCenter.y)
+        scale(scaleX = 1.22f * underGlowScale, scaleY = 0.44f * underGlowScale, pivot = Offset.Zero)
+      }) {
         drawCircle(
-          brush =
-            Brush.radialGradient(
-              colors =
-                listOf(
-                  accentPeach.copy(alpha = underGlowAlpha * 0.85f),
-                  primaryTerracotta.copy(alpha = underGlowAlpha * 0.42f),
-                  Color.Transparent,
-                ),
-              center = underGlowCenter,
-              radius = underGlowRadius,
-            ),
-          center = underGlowCenter,
-          radius = underGlowRadius,
+          brush = cachedPillBrushes.underGlowBrush,
+          center = Offset.Zero,
+          radius = cachedPillBrushes.underGlowBaseRadius,
+          alpha = underGlowAlpha,
         )
       }
     }
 
-    // 3. Navbar frosted glass pill card with dynamically pinched card edges & specular reflections
     drawPinchedNavbarGlassCard(
+      pathPool = pathPool,
+      cachedPillBrushes = cachedPillBrushes,
       pillLeft = 0f,
       pillTop = pillTopPx,
       pillWidth = size.width,
       pillHeight = pillHeightPx,
-      pillBgColors = pillBgColors,
       isDarkLook = isDarkLook,
-      accentPeach = accentPeach,
       primaryTerracotta = primaryTerracotta,
-      glassSpecularTop = glassSpecularTop,
-      glassSpecularBottom = glassSpecularBottom,
       capsuleCenterX = capsuleCenterX,
       capsuleHalfWidth = capsuleWidth / 2f,
       maxPinchPx = maxPinchPx,
       bulgeAlphaBoost = bulgeClamped,
     )
 
-    // 4. Curved convex jelly glass capsule
     val capsulePath =
       buildConvexJellyCapsulePath(
         left = capsuleLeft,
@@ -853,9 +1008,9 @@ private fun LiquidGlassVisualStageCanvas(
         dirBias = dirBias,
         crownPx = 2.4.dp.toPx(),
         leanPx = dirBias * 4.5.dp.toPx(),
+        outPath = pathPool.capsulePath,
       )
 
-    // Elevation shadow directly hugging the bulging capsule
     val shadowPath =
       buildConvexJellyCapsulePath(
         left = capsuleLeft - 1.5.dp.toPx(),
@@ -866,6 +1021,7 @@ private fun LiquidGlassVisualStageCanvas(
         dirBias = dirBias,
         crownPx = 2.2.dp.toPx(),
         leanPx = dirBias * 4.5.dp.toPx(),
+        outPath = pathPool.capsuleShadowPath,
       )
     drawPath(
       path = shadowPath,
@@ -874,27 +1030,11 @@ private fun LiquidGlassVisualStageCanvas(
         else primaryTerracotta.copy(alpha = 0.14f + bulgeClamped * 0.16f),
     )
 
-    // 5. Curved outer chromatic dispersion & prism reflection ("efek melengkung di tepi kapsul diikuti pantulan chromatic halus")
     val dispIntensity =
       (bulgeClamped * 0.85f + (chromaticDispersionDpState.value / 3.25f) * 0.65f)
         .coerceIn(0f, 1.35f) * glassIntensity.dispersionMultiplier
     if (dispIntensity > 0.04f && !reducedMotion) {
       val prismCenter = Offset(capsuleCenterX + dirBias * 6.dp.toPx(), pillCenterY)
-      val outerPrismBrush =
-        Brush.sweepGradient(
-          0.00f to Color(0xFFFFB48A).copy(alpha = 0.58f * dispIntensity),
-          0.14f to Color(0xFF22D3EE).copy(alpha = 0.62f * dispIntensity),
-          0.26f to Color(0xFF34D399).copy(alpha = 0.52f * dispIntensity),
-          0.38f to Color(0xFFFF3B30).copy(alpha = 0.86f * dispIntensity),
-          0.48f to Color(0xFFFF9500).copy(alpha = 0.82f * dispIntensity),
-          0.56f to Color(0xFF22D3EE).copy(alpha = 0.78f * dispIntensity),
-          0.66f to Color(0xFF2563EB).copy(alpha = 0.72f * dispIntensity),
-          0.78f to Color(0xFFA855F7).copy(alpha = 0.55f * dispIntensity),
-          0.90f to Color(0xFFFFE4D6).copy(alpha = 0.48f * dispIntensity),
-          1.00f to Color(0xFFFFB48A).copy(alpha = 0.58f * dispIntensity),
-          center = prismCenter,
-        )
-
       val outerPrismPath =
         buildConvexJellyCapsulePath(
           left = capsuleLeft - 1.2.dp.toPx() * bulgeClamped,
@@ -905,14 +1045,20 @@ private fun LiquidGlassVisualStageCanvas(
           dirBias = dirBias,
           crownPx = 2.6.dp.toPx(),
           leanPx = dirBias * 4.5.dp.toPx(),
+          outPath = pathPool.outerPrismPath,
         )
-      drawPath(
-        path = outerPrismPath,
-        brush = outerPrismBrush,
-        style = Stroke(width = (3.4f * dispIntensity.coerceIn(0.35f, 1.2f)).dp.toPx(), join = StrokeJoin.Round),
-      )
+      outerPrismPath.translate(Offset(-prismCenter.x, -prismCenter.y))
+      withTransform({
+        translate(prismCenter.x, prismCenter.y)
+      }) {
+        drawPath(
+          path = outerPrismPath,
+          brush = cachedPillBrushes.outerPrismBrush,
+          alpha = dispIntensity.coerceIn(0f, 1f),
+          style = Stroke(width = (3.4f * dispIntensity.coerceIn(0.35f, 1.2f)).dp.toPx(), join = StrokeJoin.Round),
+        )
+      }
 
-      // Secondary offset cool-to-warm chromatic ghost rim aligned to curve motion
       val dispShiftPx = (chromaticDispersionDpState.value * glassIntensity.dispersionMultiplier).dp.toPx()
       if (dispShiftPx > 0.1f) {
         val trailSign = if (dirBias >= 0f) -1f else 1f
@@ -927,6 +1073,7 @@ private fun LiquidGlassVisualStageCanvas(
               dirBias = dirBias,
               crownPx = 2.4.dp.toPx(),
               leanPx = dirBias * 4.5.dp.toPx(),
+              outPath = pathPool.ghostRedPath,
             ),
           color = Color(0xFFFF4D4D).copy(alpha = 0.34f * dispIntensity.coerceAtMost(1f)),
           style = Stroke(width = 1.6.dp.toPx(), join = StrokeJoin.Round),
@@ -942,6 +1089,7 @@ private fun LiquidGlassVisualStageCanvas(
               dirBias = dirBias,
               crownPx = 2.4.dp.toPx(),
               leanPx = dirBias * 4.5.dp.toPx(),
+              outPath = pathPool.ghostCyanPath,
             ),
           color = Color(0xFF22D3EE).copy(alpha = 0.32f * dispIntensity.coerceAtMost(1f)),
           style = Stroke(width = 1.6.dp.toPx(), join = StrokeJoin.Round),
@@ -949,7 +1097,6 @@ private fun LiquidGlassVisualStageCanvas(
       }
     }
 
-    // 6. Main translucent frosted convex lens dome fill (tuned per NavbarThemeStyle)
     val (bodyTop, bodyBottom) =
       when (navbarThemeStyle) {
         NavbarThemeStyle.CRYSTAL_CLEAR ->
@@ -978,38 +1125,43 @@ private fun LiquidGlassVisualStageCanvas(
           }
       }
 
-    clipPath(capsulePath) {
-      drawRect(
-        brush =
-          Brush.verticalGradient(
-            colors = listOf(bodyTop, bodyBottom),
-            startY = capsuleTop,
-            endY = capsuleTop + capsuleHeight,
-          ),
-        topLeft = Offset(capsuleLeft - 4.dp.toPx(), capsuleTop - 4.dp.toPx()),
-        size = Size(capsuleWidth + 8.dp.toPx(), capsuleHeight + 8.dp.toPx()),
-      )
+    val styleKey = (navbarThemeStyle.ordinal * 31) + (if (isDarkLook) 1 else 0) + accentPeach.hashCode()
+    dynamicCapsuleBrushes.updateIfNeeded(
+      styleKey = styleKey,
+      capsuleTop = capsuleTop,
+      capsuleHeight = capsuleHeight,
+      bulgeClamped = bulgeClamped,
+      glow = glow,
+      bodyTop = bodyTop,
+      bodyBottom = bodyBottom,
+      isDarkLook = isDarkLook,
+      accentPeach = accentPeach,
+    )
 
-      // Convex internal optical dome specular sheen
+    clipPath(capsulePath) {
+      dynamicCapsuleBrushes.bodyBrush?.let { bodyBrush ->
+        drawRect(
+          brush = bodyBrush,
+          topLeft = Offset(capsuleLeft - 4.dp.toPx(), capsuleTop - 4.dp.toPx()),
+          size = Size(capsuleWidth + 8.dp.toPx(), capsuleHeight + 8.dp.toPx()),
+        )
+      }
+
       val domeFocus = Offset(capsuleCenterX + dirBias * capsuleWidth * 0.14f, capsuleTop + capsuleHeight * 0.24f)
       val domeRadius = (capsuleWidth * 0.72f).coerceAtLeast(1f)
-      drawCircle(
-        brush =
-          Brush.radialGradient(
-            colors =
-              listOf(
-                Color.White.copy(alpha = if (isDarkLook) 0.20f + bulgeClamped * 0.12f else 0.45f),
-                accentPeach.copy(alpha = (0.14f + bulgeClamped * 0.24f).coerceAtMost(0.45f)),
-                Color.Transparent,
-              ),
-            center = domeFocus,
-            radius = domeRadius,
-          ),
-        center = domeFocus,
-        radius = domeRadius,
-      )
+      val domeScale = (domeRadius / cachedPillBrushes.domeBaseRadius).coerceAtLeast(0.5f)
+      withTransform({
+        translate(domeFocus.x, domeFocus.y)
+        scale(scaleX = domeScale, scaleY = domeScale, pivot = Offset.Zero)
+      }) {
+        drawCircle(
+          brush = cachedPillBrushes.domeBrush,
+          center = Offset.Zero,
+          radius = cachedPillBrushes.domeBaseRadius,
+          alpha = (0.72f + bulgeClamped * 0.28f).coerceIn(0f, 1f),
+        )
+      }
 
-      // Subtle inner curved glass meniscus shadow ring (creates 3D thick-lens depth)
       if (bulgeClamped > 0.04f) {
         val innerMeniscusPath =
           buildConvexJellyCapsulePath(
@@ -1021,40 +1173,25 @@ private fun LiquidGlassVisualStageCanvas(
             dirBias = dirBias,
             crownPx = 2.0.dp.toPx(),
             leanPx = dirBias * 3.5.dp.toPx(),
+            outPath = pathPool.innerMeniscusPath,
           )
-        drawPath(
-          path = innerMeniscusPath,
-          brush =
-            Brush.verticalGradient(
-              colors =
-                listOf(
-                  Color.Black.copy(alpha = 0.22f * bulgeClamped),
-                  Color.Transparent,
-                  Color.Black.copy(alpha = 0.16f * bulgeClamped),
-                ),
-              startY = capsuleTop,
-              endY = capsuleTop + capsuleHeight,
-            ),
-          style = Stroke(width = 2.6.dp.toPx(), join = StrokeJoin.Round),
-        )
+        dynamicCapsuleBrushes.meniscusBrush?.let { meniscusBrush ->
+          drawPath(
+            path = innerMeniscusPath,
+            brush = meniscusBrush,
+            style = Stroke(width = 2.6.dp.toPx(), join = StrokeJoin.Round),
+          )
+        }
       }
     }
 
-    // 7. Crisp curved outer glass lip highlight around capsule boundary
-    drawPath(
-      path = capsulePath,
-      brush =
-        Brush.verticalGradient(
-          colors =
-            listOf(
-              Color.White.copy(alpha = if (isDarkLook) 0.62f + bulgeClamped * 0.26f else 0.96f),
-              accentPeach.copy(alpha = (0.34f + bulgeClamped * 0.44f).coerceAtMost(0.88f)),
-            ),
-          startY = capsuleTop,
-          endY = capsuleTop + capsuleHeight,
-        ),
-      style = Stroke(width = (1.15f + bulgeClamped * 0.65f).dp.toPx(), join = StrokeJoin.Round),
-    )
+    dynamicCapsuleBrushes.rimBrush?.let { rimBrush ->
+      drawPath(
+        path = capsulePath,
+        brush = rimBrush,
+        style = Stroke(width = (1.15f + bulgeClamped * 0.65f).dp.toPx(), join = StrokeJoin.Round),
+      )
+    }
   }
 }
 
@@ -1422,6 +1559,16 @@ fun LiquidGlassNavbar(
           }
         }
 
+      val labelSmall = MaterialTheme.typography.labelSmall
+      val normalTabLabelStyle =
+        remember(labelSmall) {
+          labelSmall.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Medium)
+        }
+      val highlightedTabLabelStyle =
+        remember(labelSmall) {
+          labelSmall.copy(fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+        }
+
       Row(
         modifier =
           Modifier
@@ -1632,11 +1779,7 @@ fun LiquidGlassNavbar(
             Spacer(modifier = Modifier.height(2.dp))
             Text(
               text = tab.label,
-              style =
-                MaterialTheme.typography.labelSmall.copy(
-                  fontSize = 10.5.sp,
-                  fontWeight = if (isHighlighted) FontWeight.SemiBold else FontWeight.Medium,
-                ),
+              style = if (isHighlighted) highlightedTabLabelStyle else normalTabLabelStyle,
               color = itemColor,
               maxLines = 1,
               softWrap = false,

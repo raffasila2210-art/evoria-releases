@@ -51,6 +51,7 @@ import com.example.ui.components.EvoriaFormTextField
 import com.example.ui.components.EvoriaSanctuaryBackdrop
 import com.example.ui.components.EvoriaSymmetricPrivacyRow
 import com.example.ui.components.EvoriaTopBar
+import com.example.ui.components.rememberThumbnailRequest
 import com.example.ui.theme.LocalEvoriaTokens
 
 @Composable
@@ -100,9 +101,10 @@ fun QuickShareScreen(
           contentPadding = PaddingValues(vertical = 4.dp),
           horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-          items(sharedUris) { uri ->
+          items(sharedUris, key = { it.toString() }) { uri ->
+            val previewReq = rememberThumbnailRequest(uri, sizePx = 320)
             AsyncImage(
-              model = uri,
+              model = previewReq,
               contentDescription = "Pratinjau media yang dibagikan",
               modifier = Modifier.size(136.dp).clip(RoundedCornerShape(14.dp)),
               contentScale = ContentScale.Crop,

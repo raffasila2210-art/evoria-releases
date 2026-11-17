@@ -61,13 +61,7 @@ object FrameRateController {
 
   private val mainHandler = Handler(Looper.getMainLooper())
 
-  @Suppress("DEPRECATION")
-  private fun currentDisplay(activity: Activity): Display? =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-      activity.display
-    } else {
-      activity.windowManager?.defaultDisplay
-    }
+  private fun currentDisplay(activity: Activity): Display? = activity.display
 
   /**
    * Schedules the 60 FPS lock after initial window creation & SurfaceSyncGroup (#2/#3) settle so

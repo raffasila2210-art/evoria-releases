@@ -7,8 +7,10 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -74,6 +76,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -101,6 +104,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -138,11 +142,15 @@ import com.example.data.local.PlaylistEntity
 import com.example.data.local.ReflectionAnswerEntity
 import com.example.data.local.TimeCapsuleEntity
 import com.example.data.local.TrackEntity
+import com.example.data.remote.SharedReflectionDto
 import com.example.data.remote.SpotifyPlaylistImporter
 import com.example.data.remote.YouTubeDataApiClient
+import com.example.data.remote.YouTubeTrackMatch
 import com.example.media.MusicPlayerState
 import com.example.media.YouTubePlayerCommand
+import com.example.ui.AiReflectionUiState
 import com.example.ui.SpotifyImportUiState
+import com.example.ui.YouTubeDirectSearchUiState
 import com.example.ui.components.EvoriaActionChip
 import com.example.ui.components.EvoriaCard
 import com.example.ui.components.EvoriaFormTextField
@@ -295,10 +303,23 @@ fun RefleksiScreen(
   onCreateTimeCapsule: (title: String, body: String, unlockAtMillis: Long, visibility: String, attachmentUri: Uri?) -> Unit,
   onReadEnforcedCapsule: suspend (String) -> TimeCapsuleEntity?,
   onOpenMusic: () -> Unit,
+  sharedReflections: List<SharedReflectionDto> = emptyList(),
+  currentUid: String = "",
+  aiConsentGranted: Boolean = false,
+  aiReflectionState: AiReflectionUiState = AiReflectionUiState.Idle,
+  onGenerateAiReflection: () -> Unit = {},
 ) {
   val tokens = LocalEvoriaTokens.current
   val scope = rememberCoroutineScope()
   var selectedSection by remember { mutableStateOf("jurnal") }
+
+  val partnerSharedReflections =
+    remember(sharedReflections, currentUid) {
+      sharedReflections.filter { it.authorUid != currentUid }
+    }
+  val partnerJournals = remember(partnerSharedReflections) { partnerSharedReflections.filter { it.kind == "journal" } }
+  val partnerLetters = remember(partnerSharedReflections) { partnerSharedReflections.filter { it.kind == "letter" } }
+  val partnerCapsules = remember(partnerSharedReflections) { partnerSharedReflections.filter { it.kind == "capsule" } }
 
   var editingJournal by remember { mutableStateOf<JournalEntity?>(null) }
   var showJournalDialog by remember { mutableStateOf(false) }
@@ -308,6 +329,7 @@ fun RefleksiScreen(
 
   var showCapsuleDialog by remember { mutableStateOf(false) }
   var inspectedCapsule by remember { mutableStateOf<TimeCapsuleEntity?>(null) }
+  var inspectedPartnerReflection by remember { mutableStateOf<SharedReflectionDto?>(null) }
 
   // Mood input state
   var selectedMoodKey by remember { mutableStateOf("hangat") }
@@ -315,11 +337,14 @@ fun RefleksiScreen(
 
   // Reflection prompt state
   var promptIndex by remember { mutableStateOf(0) }
+  var customAiPrompt by remember { mutableStateOf<String?>(null) }
   val currentPrompt = DailyPrompts[promptIndex % DailyPrompts.size]
+  val displayedPromptText = customAiPrompt ?: currentPrompt.text
+  val displayedPromptId = if (customAiPrompt != null) "ai_prompt_${customAiPrompt.hashCode()}" else currentPrompt.id
   var promptAnswer by remember { mutableStateOf("") }
 
   LazyColumn(
-    modifier = Modifier.fillMaxSize(),
+    modifier = Modifier.fillMaxSize().testTag("refleksi_lazy_column"),
     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 120.dp),
     verticalArrangement = Arrangement.spacedBy(14.dp),
   ) {
@@ -351,7 +376,10 @@ fun RefleksiScreen(
 
     // Section tabs
     item {
-      LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      LazyRow(
+        modifier = Modifier.testTag("refleksi_tabs_row"),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
         item {
           EvoriaActionChip(
             label = "Jurnal (${journals.size})",
@@ -458,8 +486,9 @@ fun RefleksiScreen(
               }
               if (j.attachmentUri != null) {
                 Spacer(modifier = Modifier.height(8.dp))
+                val attachReq = rememberThumbnailRequest(j.attachmentUri, sizePx = 560)
                 AsyncImage(
-                  model = j.attachmentUri,
+                  model = attachReq,
                   contentDescription = j.title,
                   modifier = Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(14.dp)),
                   contentScale = ContentScale.Crop,
@@ -467,6 +496,32 @@ fun RefleksiScreen(
               }
               Spacer(modifier = Modifier.height(6.dp))
               Text(j.body, style = MaterialTheme.typography.bodyMedium, color = tokens.inkText, maxLines = 4, overflow = TextOverflow.Ellipsis)
+            }
+          }
+        }
+        if (partnerJournals.isNotEmpty()) {
+          item {
+            Text(
+              text = "Jurnal Bersama dari Pasangan (${partnerJournals.size})",
+              style = MaterialTheme.typography.titleMedium,
+              color = tokens.primaryTerracotta,
+            )
+          }
+          items(partnerJournals, key = { "pj_${it.id}" }) { pj ->
+            EvoriaCard(elevated = true) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(pj.title, style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+                  Text("Ditulis oleh ${pj.authorName}", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+                }
+                VisibilityBadge("shared")
+              }
+              Spacer(modifier = Modifier.height(6.dp))
+              Text(pj.body, style = MaterialTheme.typography.bodyMedium, color = tokens.inkText)
             }
           }
         }
@@ -531,6 +586,41 @@ fun RefleksiScreen(
                 text = if (ltr.isSealed && !ltr.isDraft) "Ketuk untuk membuka segel surat ini..." else ltr.body,
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (ltr.isSealed && !ltr.isDraft) tokens.primaryTerracotta else tokens.inkText,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
+          }
+        }
+        if (partnerLetters.isNotEmpty()) {
+          item {
+            Text(
+              text = "Surat dari Pasangan (${partnerLetters.size})",
+              style = MaterialTheme.typography.titleMedium,
+              color = tokens.primaryTerracotta,
+            )
+          }
+          items(partnerLetters, key = { "pl_${it.id}" }) { pl ->
+            EvoriaCard(
+              elevated = true,
+              onClick = { inspectedPartnerReflection = pl },
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(pl.title, style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+                  Text("Dari ${pl.authorName}", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+                }
+                VisibilityBadge("shared")
+              }
+              Spacer(modifier = Modifier.height(6.dp))
+              Text(
+                text = if (pl.isSealed) "Surat bersegel — ketuk untuk membacanya" else pl.body,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (pl.isSealed) tokens.primaryTerracotta else tokens.inkText,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
               )
@@ -626,12 +716,15 @@ fun RefleksiScreen(
               verticalAlignment = Alignment.CenterVertically,
             ) {
               Text("Pertanyaan Refleksi Harian", style = MaterialTheme.typography.labelLarge, color = tokens.primaryTerracotta)
-              TextButton(onClick = { promptIndex = (promptIndex + 1) % DailyPrompts.size }) {
+              TextButton(onClick = {
+                customAiPrompt = null
+                promptIndex = (promptIndex + 1) % DailyPrompts.size
+              }) {
                 Text("Ganti Pertanyaan", color = tokens.mutedText)
               }
             }
             Spacer(modifier = Modifier.height(6.dp))
-            Text(currentPrompt.text, style = MaterialTheme.typography.headlineSmall, color = tokens.inkText)
+            Text(displayedPromptText, style = MaterialTheme.typography.headlineSmall, color = tokens.inkText)
             Spacer(modifier = Modifier.height(12.dp))
             OutlinedTextField(
               value = promptAnswer,
@@ -643,7 +736,7 @@ fun RefleksiScreen(
             Spacer(modifier = Modifier.height(12.dp))
             Button(
               onClick = {
-                onSaveReflectionAnswer(currentPrompt.id, currentPrompt.text, promptAnswer)
+                onSaveReflectionAnswer(displayedPromptId, displayedPromptText, promptAnswer)
                 promptAnswer = ""
               },
               enabled = promptAnswer.isNotBlank(),
@@ -652,6 +745,76 @@ fun RefleksiScreen(
               modifier = Modifier.fillMaxWidth().height(48.dp).testTag("save_reflection_answer_button"),
             ) {
               Text("Simpan Jawaban")
+            }
+          }
+        }
+        item {
+          EvoriaCard(modifier = Modifier.testTag("refleksi_ai_insight_card")) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
+                Text("Wawasan & Pertanyaan Gemini AI", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
+              }
+              TextButton(
+                onClick = onGenerateAiReflection,
+                enabled = aiReflectionState !is AiReflectionUiState.Loading,
+                modifier = Modifier.minimumInteractiveComponentSize().testTag("refleksi_ai_generate_button"),
+              ) {
+                if (aiReflectionState is AiReflectionUiState.Loading) {
+                  CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = tokens.primaryTerracotta)
+                } else {
+                  Text("Minta AI", color = tokens.primaryTerracotta)
+                }
+              }
+            }
+            when (aiReflectionState) {
+              AiReflectionUiState.Idle -> {
+                Text(
+                  text =
+                    if (aiConsentGranted) "Ketuk 'Minta AI' untuk mendapatkan pertanyaan refleksi yang disesuaikan dengan suasana hatimu."
+                    else "Aktifkan izin Gemini AI di tab Jelajah untuk membuka wawasan refleksi emosional.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = tokens.mutedText,
+                )
+              }
+              AiReflectionUiState.Loading -> {
+                Text(
+                  text = "Gemini AI sedang membaca catatan suasana hatimu...",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = tokens.mutedText,
+                )
+              }
+              is AiReflectionUiState.Success -> {
+                Text(
+                  text = aiReflectionState.insight.warmInsight,
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = tokens.inkText,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                  text = "Saran pertanyaan: ${aiReflectionState.insight.promptQuestion}",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = tokens.primaryTerracotta,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                OutlinedButton(
+                  onClick = { customAiPrompt = aiReflectionState.insight.promptQuestion },
+                  shape = RoundedCornerShape(50),
+                ) {
+                  Text("Jawab Pertanyaan Ini")
+                }
+              }
+              is AiReflectionUiState.Error -> {
+                Text(
+                  text = aiReflectionState.message,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = tokens.roseError,
+                )
+              }
             }
           }
         }
@@ -736,6 +899,49 @@ fun RefleksiScreen(
             }
           }
         }
+        if (partnerCapsules.isNotEmpty()) {
+          item {
+            Text(
+              text = "Kapsul Waktu dari Pasangan (${partnerCapsules.size})",
+              style = MaterialTheme.typography.titleMedium,
+              color = tokens.primaryTerracotta,
+            )
+          }
+          items(partnerCapsules, key = { "pc_${it.id}" }) { pc ->
+            val unlockMs = pc.unlockAtMillis ?: Long.MAX_VALUE
+            val unlocked = System.currentTimeMillis() >= unlockMs
+            EvoriaCard(
+              elevated = unlocked,
+              onClick = { inspectedPartnerReflection = pc },
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                  Icon(
+                    imageVector = if (unlocked) Icons.Filled.LockOpen else Icons.Filled.Lock,
+                    contentDescription = null,
+                    tint = if (unlocked) tokens.sageSuccess else tokens.primaryTerracotta,
+                  )
+                  Spacer(modifier = Modifier.width(10.dp))
+                  Column {
+                    Text(pc.title, style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+                    Text(
+                      text =
+                        if (unlocked) "Dari ${pc.authorName} • Terbuka sejak ${formatIndoDate(unlockMs)}"
+                        else "Dari ${pc.authorName} • Terkunci hingga ${formatIndoDate(unlockMs)}",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = tokens.mutedText,
+                    )
+                  }
+                }
+                VisibilityBadge("shared")
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -803,8 +1009,9 @@ fun RefleksiScreen(
             )
           } else {
             if (cap.attachmentUri != null) {
+              val capAttachReq = rememberThumbnailRequest(cap.attachmentUri, sizePx = 560)
               AsyncImage(
-                model = cap.attachmentUri,
+                model = capAttachReq,
                 contentDescription = cap.title,
                 modifier = Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(14.dp)),
                 contentScale = ContentScale.Crop,
@@ -817,6 +1024,33 @@ fun RefleksiScreen(
       },
       confirmButton = {
         TextButton(onClick = { inspectedCapsule = null }) { Text("Tutup") }
+      },
+    )
+  }
+
+  inspectedPartnerReflection?.let { pr ->
+    val isCapsule = pr.kind == "capsule"
+    val unlockMs = pr.unlockAtMillis ?: Long.MAX_VALUE
+    val unlocked = !isCapsule || System.currentTimeMillis() >= unlockMs
+    AlertDialog(
+      onDismissRequest = { inspectedPartnerReflection = null },
+      title = { Text(pr.title) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text("Dari ${pr.authorName}", style = MaterialTheme.typography.labelSmall, color = tokens.primaryTerracotta)
+          if (!unlocked) {
+            Text(
+              "Kapsul waktu dari pasangan masih tersegel rapat hingga ${formatIndoDate(unlockMs)}.",
+              style = MaterialTheme.typography.bodyMedium,
+              color = tokens.mutedText,
+            )
+          } else {
+            Text(pr.body, style = MaterialTheme.typography.bodyLarge, color = tokens.inkText)
+          }
+        }
+      },
+      confirmButton = {
+        TextButton(onClick = { inspectedPartnerReflection = null }) { Text("Tutup") }
       },
     )
   }
@@ -1020,8 +1254,9 @@ private fun JournalEditorDialog(
               )
               val previewModel: Any? = pickedUri ?: existing?.attachmentUri
               if (previewModel != null) {
+                val journalPreviewReq = rememberThumbnailRequest(previewModel, sizePx = 560)
                 AsyncImage(
-                  model = previewModel,
+                  model = journalPreviewReq,
                   contentDescription = "Lampiran foto jurnal",
                   modifier = Modifier.fillMaxWidth().height(132.dp).clip(RoundedCornerShape(14.dp)),
                   contentScale = ContentScale.Crop,
@@ -1312,6 +1547,10 @@ fun MusicAndSoundtrackScreen(
   spotifyImportState: SpotifyImportUiState = SpotifyImportUiState.Idle,
   matchingYouTubePlaylistId: String? = null,
   isYouTubeApiConfigured: Boolean = YouTubeDataApiClient.isApiKeyConfigured(),
+  youtubeDirectSearchState: YouTubeDirectSearchUiState = YouTubeDirectSearchUiState.Idle,
+  onSearchYouTubeDirect: (String) -> Unit = {},
+  onClearYouTubeDirectSearch: () -> Unit = {},
+  onPlayYouTubeMatchDirectly: (match: YouTubeTrackMatch, preferredPlaylistId: String?, onReadyToOpenPlayer: () -> Unit) -> Unit = { _, _, _ -> },
   onCreatePlaylist: (title: String, subtitle: String, linkedAlbumId: String?) -> Unit,
   onDeletePlaylist: (String) -> Unit = {},
   onImportSpotifyPlaylist: (rawUrl: String, linkedAlbumId: String?, onImported: (String) -> Unit) -> Unit = { _, _, _ -> },
@@ -1331,7 +1570,7 @@ fun MusicAndSoundtrackScreen(
   val tokens = LocalEvoriaTokens.current
   val context = LocalContext.current
   var selectedPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
-  var trackSearchQuery by rememberSaveable { mutableStateOf("") }
+  var youtubeSearchQuery by rememberSaveable { mutableStateOf("") }
   var showNewPlaylistDialog by remember { mutableStateOf(false) }
   var showSpotifyImportDialog by remember { mutableStateOf(false) }
   var playlistPendingDelete by remember { mutableStateOf<PlaylistEntity?>(null) }
@@ -1377,13 +1616,25 @@ fun MusicAndSoundtrackScreen(
       else tracks.filter { it.playlistId == activePlaylist.id }.sortedBy { it.sortOrder }
     }
   val displayedTracks =
-    remember(playlistTracks, trackSearchQuery) {
-      val q = trackSearchQuery.trim()
-      if (q.isEmpty()) playlistTracks
+    remember(playlistTracks, youtubeSearchQuery, youtubeDirectSearchState) {
+      val q = youtubeSearchQuery.trim()
+      if (q.isEmpty() || youtubeDirectSearchState !is YouTubeDirectSearchUiState.Idle) playlistTracks
       else playlistTracks.filter { it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true) }
     }
   val isMatchingCurrentPlaylist =
     activePlaylist != null && matchingYouTubePlaylistId == activePlaylist.id
+
+  val autoMatchedPlaylistSessions = remember { mutableStateOf<Set<String>>(emptySet()) }
+  LaunchedEffect(activePlaylist?.id, playlistTracks.size) {
+    val pl = activePlaylist ?: return@LaunchedEffect
+    val hasUnmatched =
+      pl.sourceType == "spotify" &&
+        playlistTracks.any { !isYouTubeMatchedTrack(it) && !isLocalFullAudioTrack(it) }
+    if (hasUnmatched && matchingYouTubePlaylistId == null && pl.id !in autoMatchedPlaylistSessions.value) {
+      autoMatchedPlaylistSessions.value = autoMatchedPlaylistSessions.value + pl.id
+      onMatchPlaylistWithYouTube(pl.id)
+    }
+  }
 
   Box(
     modifier =
@@ -1454,19 +1705,148 @@ fun MusicAndSoundtrackScreen(
         }
       }
 
-      if (playlistTracks.isNotEmpty()) {
-        EvoriaPillSearchBar(
-          query = trackSearchQuery,
-          onQueryChange = { trackSearchQuery = it },
-          onSearch = {},
-          placeholder = "Cari lagu atau artis...",
-          inputTestTag = "music_search_input",
-          submitTestTag = "music_search_submit",
-          darkSpotifyStyle = true,
-          modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        )
+      // Unified YouTube Search & Playlist Filter bar (works with or without YOUTUBE_API_KEY)
+      EvoriaPillSearchBar(
+        query = youtubeSearchQuery,
+        onQueryChange = { q ->
+          youtubeSearchQuery = q
+          if (q.isBlank()) onClearYouTubeDirectSearch()
+        },
+        onSearch = { onSearchYouTubeDirect(youtubeSearchQuery) },
+        placeholder = "Cari lagu di YouTube atau filter playlist...",
+        inputTestTag = "music_youtube_search_input",
+        submitTestTag = "music_youtube_search_submit",
+        darkSpotifyStyle = true,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+      )
+
+      if (youtubeDirectSearchState !is YouTubeDirectSearchUiState.Idle) {
         Spacer(modifier = Modifier.height(6.dp))
+        Surface(
+          shape = RoundedCornerShape(16.dp),
+          color = SpotifyCardBg,
+          border = BorderStroke(1.dp, SpotifyEmerald.copy(alpha = 0.45f)),
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        ) {
+          Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                text = "Hasil Pencarian YouTube",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = SpotifyEmerald,
+              )
+              IconButton(
+                onClick = {
+                  youtubeSearchQuery = ""
+                  onClearYouTubeDirectSearch()
+                },
+                modifier = Modifier.size(32.dp).testTag("music_youtube_search_close"),
+              ) {
+                Icon(Icons.Filled.Close, contentDescription = "Tutup hasil YouTube", tint = SpotifyTextMuted, modifier = Modifier.size(18.dp))
+              }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            when (val ytState = youtubeDirectSearchState) {
+              YouTubeDirectSearchUiState.Loading -> {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp),
+                  modifier = Modifier.padding(vertical = 8.dp),
+                ) {
+                  CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = SpotifyEmerald)
+                  Text("Mencari lagu di YouTube...", style = MaterialTheme.typography.bodySmall, color = SpotifyTextMuted)
+                }
+              }
+              is YouTubeDirectSearchUiState.Error -> {
+                Text(
+                  text = ytState.message,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = tokens.roseError,
+                  modifier = Modifier.padding(vertical = 4.dp),
+                )
+              }
+              is YouTubeDirectSearchUiState.Success -> {
+                if (ytState.results.isEmpty()) {
+                  Text(
+                    text = "Tidak ditemukan lagu untuk \"${ytState.query}\". Coba kata kunci lain.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SpotifyTextMuted,
+                    modifier = Modifier.padding(vertical = 6.dp),
+                  )
+                } else {
+                  LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 228.dp).testTag("music_youtube_results_list"),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                  ) {
+                    items(ytState.results, key = { it.videoId }) { match ->
+                      Row(
+                        modifier =
+                          Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF242429))
+                            .clickable {
+                              onPlayYouTubeMatchDirectly(match, activePlaylist?.id, onOpenFullPlayer)
+                            }
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .testTag("yt_direct_play_${match.videoId}"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                      ) {
+                        val thumbReq = rememberThumbnailRequest(YouTubeDataApiClient.thumbnailUrl(match.videoId), sizePx = 128)
+                        AsyncImage(
+                          model = thumbReq,
+                          contentDescription = match.title,
+                          contentScale = ContentScale.Crop,
+                          modifier = Modifier.size(44.dp).clip(RoundedCornerShape(6.dp)).background(SpotifyHeroTop),
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                          Text(
+                            text = match.title,
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = SpotifyTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                          val durLabel = if (match.durationMs > 0L) " • ${formatDurationMmSs(match.durationMs)}" else ""
+                          Text(
+                            text = "${match.channelTitle}$durLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SpotifyTextMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                        }
+                        Surface(
+                          shape = CircleShape,
+                          color = SpotifyEmerald,
+                          modifier = Modifier.size(34.dp),
+                        ) {
+                          Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                              imageVector = Icons.Filled.PlayArrow,
+                              contentDescription = "Putar ${match.title}",
+                              tint = Color.Black,
+                              modifier = Modifier.size(20.dp),
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              YouTubeDirectSearchUiState.Idle -> Unit
+            }
+          }
+        }
       }
+
+      Spacer(modifier = Modifier.height(6.dp))
 
       LazyColumn(
         modifier = Modifier.weight(1f).testTag("music_lazy_column"),
@@ -1547,7 +1927,7 @@ fun MusicAndSoundtrackScreen(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier =
-                      if (playerState.currentTrack.title.length > 26) Modifier.basicMarquee(iterations = Int.MAX_VALUE)
+                      if (playerState.isPlaying && playerState.currentTrack.title.length > 24) Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                       else Modifier,
                   )
                   Text(playerState.currentTrack.artist, style = MaterialTheme.typography.bodySmall, color = SpotifyTextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1682,9 +2062,6 @@ fun MusicAndSoundtrackScreen(
                       color = SpotifyTextPrimary,
                       maxLines = 1,
                       overflow = TextOverflow.Ellipsis,
-                      modifier =
-                        if (activePlaylist.title.length > 22) Modifier.basicMarquee(iterations = Int.MAX_VALUE)
-                        else Modifier,
                     )
                     if (activePlaylist.subtitle.isNotBlank()) {
                       Text(
@@ -1706,7 +2083,7 @@ fun MusicAndSoundtrackScreen(
                   ) {
                     CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = SpotifyEmerald)
                     Text(
-                      text = "Mencari versi penuh di YouTube Data API...",
+                      text = "Mencari & memuat audio penuh YouTube...",
                       style = MaterialTheme.typography.labelSmall,
                       color = SpotifyEmerald,
                     )
@@ -1716,10 +2093,10 @@ fun MusicAndSoundtrackScreen(
                   Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = Color(0xFF28231D),
-                    border = BorderStroke(1.dp, tokens.accentPeach.copy(alpha = 0.35f)),
+                    border = BorderStroke(1.dp, SpotifyEmerald.copy(alpha = 0.35f)),
                   ) {
                     Text(
-                      text = "YOUTUBE_API_KEY belum diisi di panel Secrets AI Studio. Tambahkan key YouTube Data API v3 agar lagu penuh ditemukan otomatis.",
+                      text = "Ketuk lagu mana saja atau tekan 'Cari YouTube' untuk mencari dan memutar audio YouTube langsung di aplikasi.",
                       style = MaterialTheme.typography.labelSmall,
                       color = tokens.accentPeach,
                       modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
@@ -1797,7 +2174,7 @@ fun MusicAndSoundtrackScreen(
                               onPlayTrack(playlistTracks, firstTarget.id)
                               onOpenFullPlayer()
                             } else {
-                              onMatchPlaylistWithYouTube(activePlaylist.id)
+                              onMatchTrackWithYouTube(firstTarget)
                             }
                           }
                           .testTag("spotify_hero_play_button"),
@@ -1844,7 +2221,7 @@ fun MusicAndSoundtrackScreen(
                 modifier = Modifier.fillMaxWidth(),
               ) {
                 Text(
-                  text = "Tidak ada lagu yang cocok dengan \"$trackSearchQuery\".",
+                  text = "Tidak ada lagu yang cocok dengan \"$youtubeSearchQuery\".",
                   style = MaterialTheme.typography.bodySmall,
                   color = SpotifyTextMuted,
                   modifier = Modifier.padding(16.dp),
@@ -1876,10 +2253,8 @@ fun MusicAndSoundtrackScreen(
                       if (isPlayableInApp) {
                         onPlayTrack(playlistTracks, track.id)
                         onOpenFullPlayer()
-                      } else if (isYouTubeApiConfigured) {
-                        onMatchTrackWithYouTube(track)
                       } else {
-                        openTrackOnYouTube(context, track)
+                        onMatchTrackWithYouTube(track)
                       }
                     }
                     .testTag("track_row_${track.id}"),
@@ -1924,9 +2299,9 @@ fun MusicAndSoundtrackScreen(
                     }
                   }
 
-                  // Full Marquee Song Title (only runs marquee on overflow-prone / active tracks to save 60Hz ticks) + Artist + Status
+                  // Animate marquee only on the actively playing track row so long playlists never tick dozens of animations
                   Column(modifier = Modifier.weight(1f)) {
-                    val useMarquee = track.title.length > 26 || isPlayingThis
+                    val useMarquee = isPlayingThis && playerState.isPlaying && track.title.length > 22
                     Text(
                       text = track.title,
                       style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
@@ -1951,8 +2326,8 @@ fun MusicAndSoundtrackScreen(
                       val badgeLabel =
                         when {
                           hasFullLocalAudio -> "Audio penuh lokal • Siap putar"
-                          hasYouTubeMatch -> "YouTube Penuh (YT API) • Ketuk putar"
-                          else -> "Metadata Spotify • Ketuk cari di YouTube"
+                          hasYouTubeMatch -> "YouTube Audio • Ketuk putar"
+                          else -> "Spotify • Ketuk untuk cari & putar"
                         }
                       Text(
                         text = badgeLabel,
@@ -1966,13 +2341,7 @@ fun MusicAndSoundtrackScreen(
 
                   if (track.sourceType == "spotify" && !hasFullLocalAudio && !hasYouTubeMatch) {
                     IconButton(
-                      onClick = {
-                        if (isYouTubeApiConfigured) {
-                          onMatchTrackWithYouTube(track)
-                        } else {
-                          openTrackOnYouTube(context, track)
-                        }
-                      },
+                      onClick = { onMatchTrackWithYouTube(track) },
                       modifier =
                         Modifier
                           .minimumInteractiveComponentSize()
@@ -1980,7 +2349,7 @@ fun MusicAndSoundtrackScreen(
                     ) {
                       Icon(
                         imageVector = Icons.Filled.Search,
-                        contentDescription = "Cari ${track.title} di YouTube",
+                        contentDescription = "Cari & putar ${track.title} di YouTube",
                         tint = SpotifyEmerald,
                       )
                     }
@@ -2319,8 +2688,94 @@ fun MusicAndSoundtrackScreen(
   }
 }
 
-private fun buildYouTubeIFrameHtml(initialVideoId: String): String {
-  val safeId = initialVideoId.replace(Regex("[^A-Za-z0-9_-]"), "")
+internal fun sanitizeYouTubeVideoId(raw: String): String =
+  raw.replace(Regex("[^A-Za-z0-9_-]"), "")
+
+internal fun buildAppEmbedOrigin(packageName: String): String {
+  val sanitized = packageName.trim().lowercase().replace(Regex("[^a-z0-9.-]"), "")
+  return "https://${sanitized.ifBlank { "com.aistudio.evoria" }}"
+}
+
+internal fun isYouTubeEmbedFallbackErrorCode(code: Int): Boolean =
+  code in setOf(0, 2, 5, 101, 150, 152, 153)
+
+internal fun resolveYouTubeInAppFallbackUrl(videoId: String): String =
+  "https://m.youtube.com/watch?v=${sanitizeYouTubeVideoId(videoId)}&autoplay=1"
+
+internal fun buildYouTubeMobileWatchBridgeJs(): String =
+  """
+  (function() {
+    if (window.__evoriaWatchInit) return;
+    window.__evoriaWatchInit = true;
+    var style = document.createElement('style');
+    style.textContent = 'body, html { background: #0D0D0F !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; } ytm-mobile-topbar-renderer, header, #header-bar, ytm-item-section-renderer, ytm-comment-section-header-renderer, ytm-engagement-panel-section-list-renderer, .ytm-autonav-bar, ytm-upsell-dialog-renderer, tp-yt-paper-dialog, .open-in-app-banner, ytm-app-upsell-dialog-renderer, ytm-promoted-sparkles-web-renderer { display: none !important; } #player-container-id, .player-container, #movie_player, video { width: 100vw !important; height: 100vh !important; max-height: 100vh !important; position: fixed !important; top: 0 !important; left: 0 !important; z-index: 9999 !important; background: #0D0D0F !important; object-fit: contain !important; }';
+    (document.head || document.documentElement).appendChild(style);
+
+    function findVideo() { return document.querySelector('video'); }
+    function ensurePlay() {
+      var v = findVideo();
+      if (!v) return false;
+      try { v.muted = false; v.volume = 1.0; } catch (e) {}
+      if (v.paused && !v.ended) {
+        try {
+          var p = v.play();
+          if (p && p.catch) { p.catch(function(){}); }
+        } catch (e) {}
+      }
+      var unmuteBtn = document.querySelector('.ytp-unmute, button[aria-label*="Unmute"], button[aria-label*="Suara"]');
+      if (unmuteBtn) { try { unmuteBtn.click(); } catch (e) {} }
+      var playBtn = document.querySelector('.ytp-large-play-button, button[aria-label="Play"], button[aria-label="Putar"]');
+      if (v.paused && playBtn) { try { playBtn.click(); } catch (e) {} }
+      return true;
+    }
+
+    window.playCmd = function() {
+      var v = findVideo();
+      if (v) { try { v.muted = false; v.volume = 1.0; v.play(); } catch (e) {} }
+    };
+    window.pauseCmd = function() {
+      var v = findVideo();
+      if (v) { try { v.pause(); } catch (e) {} }
+    };
+    window.seekCmd = function(sec) {
+      var v = findVideo();
+      if (v && isFinite(sec)) { try { v.currentTime = sec; } catch (e) {} }
+    };
+    window.loadFullVideo = function(vid, startSec) {
+      var t = Math.max(0, Math.round(startSec || 0));
+      window.location.href = 'https://m.youtube.com/watch?v=' + vid + '&autoplay=1' + (t > 0 ? '&t=' + t + 's' : '');
+    };
+
+    var boundVideo = null;
+    var attempts = 0;
+    setInterval(function() {
+      var v = findVideo();
+      if (v && v !== boundVideo) {
+        boundVideo = v;
+        v.addEventListener('ended', function() {
+          if (window.EvoriaYtBridge) window.EvoriaYtBridge.onEnded();
+        });
+        ensurePlay();
+      } else if (v && attempts < 14) {
+        attempts++;
+        if (v.paused) ensurePlay();
+      }
+      if (v && window.EvoriaYtBridge) {
+        var dur = (v.duration && isFinite(v.duration)) ? v.duration : 0;
+        var pos = (v.currentTime && isFinite(v.currentTime)) ? v.currentTime : 0;
+        var playing = !v.paused && !v.ended && v.readyState >= 2;
+        window.EvoriaYtBridge.onProgress(playing, Math.round(pos * 1000), Math.round(dur * 1000));
+      }
+    }, 450);
+  })();
+  """.trimIndent()
+
+internal fun buildYouTubeIFrameHtml(
+  initialVideoId: String,
+  appOrigin: String = "https://com.aistudio.evoria",
+): String {
+  val safeId = sanitizeYouTubeVideoId(initialVideoId)
+  val safeOrigin = appOrigin.replace("'", "").replace("\"", "")
   return """
     <!DOCTYPE html>
     <html>
@@ -2338,8 +2793,17 @@ private fun buildYouTubeIFrameHtml(initialVideoId: String): String {
       <script>
         var ytPlayer = null;
         var isReady = false;
+        var currentLoadedId = "$safeId";
         var pendingVideoId = "$safeId";
+        var pendingStartSec = 0;
+        var pendingCmd = null;
         var pollTimer = null;
+
+        setTimeout(function() {
+          if (!isReady && !ytPlayer && window.EvoriaYtBridge) {
+            window.EvoriaYtBridge.onFallbackNeeded(0);
+          }
+        }, 4200);
 
         function onYouTubeIframeAPIReady() {
           ytPlayer = new YT.Player('player', {
@@ -2353,14 +2817,26 @@ private fun buildYouTubeIFrameHtml(initialVideoId: String): String {
               rel: 0,
               modestbranding: 1,
               enablejsapi: 1,
-              origin: 'https://www.youtube.com'
+              origin: '$safeOrigin',
+              widget_referrer: '$safeOrigin'
             },
             events: {
               onReady: function(ev) {
                 isReady = true;
-                if (pendingVideoId) {
+                try {
+                  if (ev.target.unMute) ev.target.unMute();
+                  if (ev.target.setVolume) ev.target.setVolume(100);
+                } catch (e) {}
+                if (pendingVideoId && pendingVideoId !== currentLoadedId) {
+                  currentLoadedId = pendingVideoId;
+                  ev.target.loadVideoById({ videoId: pendingVideoId, startSeconds: pendingStartSec || 0 });
+                } else {
                   ev.target.playVideo();
                 }
+                if (pendingCmd === 'pause' && ev.target.pauseVideo) {
+                  ev.target.pauseVideo();
+                }
+                pendingCmd = null;
                 startPolling();
               },
               onStateChange: function(ev) {
@@ -2371,7 +2847,10 @@ private fun buildYouTubeIFrameHtml(initialVideoId: String): String {
                 }
               },
               onError: function(ev) {
-                if (window.EvoriaYtBridge) window.EvoriaYtBridge.onError(ev.data);
+                var code = (ev && typeof ev.data === 'number') ? ev.data : 0;
+                if (window.EvoriaYtBridge) {
+                  window.EvoriaYtBridge.onFallbackNeeded(code);
+                }
               }
             }
           });
@@ -2393,12 +2872,30 @@ private fun buildYouTubeIFrameHtml(initialVideoId: String): String {
 
         function loadFullVideo(vid, startSec) {
           pendingVideoId = vid;
+          pendingStartSec = startSec || 0;
           if (ytPlayer && isReady && ytPlayer.loadVideoById) {
-            ytPlayer.loadVideoById({ videoId: vid, startSeconds: startSec || 0 });
+            if (vid === currentLoadedId && (startSec || 0) === 0) {
+              try {
+                if (ytPlayer.unMute) ytPlayer.unMute();
+                ytPlayer.playVideo();
+              } catch (e) {}
+              return;
+            }
+            currentLoadedId = vid;
+            ytPlayer.loadVideoById({ videoId: vid, startSeconds: pendingStartSec });
           }
         }
-        function playCmd() { if (ytPlayer && isReady && ytPlayer.playVideo) ytPlayer.playVideo(); }
-        function pauseCmd() { if (ytPlayer && isReady && ytPlayer.pauseVideo) ytPlayer.pauseVideo(); }
+        function playCmd() {
+          pendingCmd = 'play';
+          if (ytPlayer && isReady && ytPlayer.playVideo) {
+            try { if (ytPlayer.unMute) ytPlayer.unMute(); } catch (e) {}
+            ytPlayer.playVideo();
+          }
+        }
+        function pauseCmd() {
+          pendingCmd = 'pause';
+          if (ytPlayer && isReady && ytPlayer.pauseVideo) ytPlayer.pauseVideo();
+        }
         function seekCmd(sec) { if (ytPlayer && isReady && ytPlayer.seekTo) ytPlayer.seekTo(sec, true); }
       </script>
     </body>
@@ -2415,36 +2912,52 @@ private fun YouTubeFullTrackEmbedPlayer(
   onError: (String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val context = LocalContext.current
+  val appOrigin = remember(context) { buildAppEmbedOrigin(context.packageName) }
   val latestUpdate by rememberUpdatedState(onPlaybackUpdate)
   val latestEnded by rememberUpdatedState(onEnded)
   val latestError by rememberUpdatedState(onError)
   val mainHandler = remember { Handler(Looper.getMainLooper()) }
   var webViewRef by remember { mutableStateOf<WebView?>(null) }
   var loadedInitialId by remember { mutableStateOf<String?>(null) }
+  var mobileWatchFallbackActive by remember { mutableStateOf(false) }
 
   DisposableEffect(Unit) {
     onDispose {
-      webViewRef?.stopLoading()
-      webViewRef?.destroy()
+      webViewRef?.apply {
+        stopLoading()
+        loadUrl("about:blank")
+        onPause()
+        destroy()
+      }
       webViewRef = null
     }
   }
 
   LaunchedEffect(videoId, webViewRef) {
     val wv = webViewRef ?: return@LaunchedEffect
+    val safeVid = sanitizeYouTubeVideoId(videoId)
+    if (safeVid.isBlank()) return@LaunchedEffect
     if (loadedInitialId == null) {
-      loadedInitialId = videoId
+      mobileWatchFallbackActive = false
+      loadedInitialId = safeVid
       wv.loadDataWithBaseURL(
-        "https://www.youtube.com",
-        buildYouTubeIFrameHtml(videoId),
+        appOrigin,
+        buildYouTubeIFrameHtml(safeVid, appOrigin),
         "text/html",
         "utf-8",
         null,
       )
-    } else if (loadedInitialId != videoId) {
-      loadedInitialId = videoId
-      val safeVid = videoId.replace(Regex("[^A-Za-z0-9_-]"), "")
-      wv.evaluateJavascript("if (typeof loadFullVideo === 'function') loadFullVideo('$safeVid', 0);", null)
+    } else if (loadedInitialId != safeVid) {
+      loadedInitialId = safeVid
+      if (mobileWatchFallbackActive) {
+        wv.loadUrl(
+          resolveYouTubeInAppFallbackUrl(safeVid),
+          mapOf("Referer" to "https://m.youtube.com/"),
+        )
+      } else {
+        wv.evaluateJavascript("if (typeof loadFullVideo === 'function') loadFullVideo('$safeVid', 0);", null)
+      }
     }
   }
 
@@ -2453,12 +2966,21 @@ private fun YouTubeFullTrackEmbedPlayer(
       val wv = webViewRef ?: return@collect
       when (cmd) {
         is YouTubePlayerCommand.Load -> {
-          val safeVid = cmd.videoId.replace(Regex("[^A-Za-z0-9_-]"), "")
-          loadedInitialId = cmd.videoId
-          wv.evaluateJavascript(
-            "if (typeof loadFullVideo === 'function') loadFullVideo('$safeVid', ${cmd.startSeconds});",
-            null,
-          )
+          val safeVid = sanitizeYouTubeVideoId(cmd.videoId)
+          if (safeVid.isNotBlank()) {
+            loadedInitialId = safeVid
+            if (mobileWatchFallbackActive) {
+              wv.loadUrl(
+                resolveYouTubeInAppFallbackUrl(safeVid),
+                mapOf("Referer" to "https://m.youtube.com/"),
+              )
+            } else {
+              wv.evaluateJavascript(
+                "if (typeof loadFullVideo === 'function') loadFullVideo('$safeVid', ${cmd.startSeconds});",
+                null,
+              )
+            }
+          }
         }
         YouTubePlayerCommand.Play -> wv.evaluateJavascript("if (typeof playCmd === 'function') playCmd();", null)
         YouTubePlayerCommand.Pause -> wv.evaluateJavascript("if (typeof pauseCmd === 'function') pauseCmd();", null)
@@ -2473,18 +2995,66 @@ private fun YouTubeFullTrackEmbedPlayer(
   AndroidView(
     factory = { ctx ->
       WebView(ctx).apply {
+        val webView = this
+        val rawUa = settings.userAgentString.orEmpty()
+        settings.userAgentString =
+          rawUa.replace("; wv)", ")").replace("Version/4.0 ", "").ifBlank {
+            "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+          }
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
+        settings.useWideViewPort = true
+        settings.loadWithOverviewMode = true
+        settings.loadsImagesAutomatically = true
         settings.mediaPlaybackRequiresUserGesture = false
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        CookieManager.getInstance().apply {
+          setAcceptCookie(true)
+          setAcceptThirdPartyCookies(webView, true)
+        }
         webViewClient =
           object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
               val url = request?.url?.toString() ?: return false
-              if (url.startsWith("https://www.youtube.com") || url.startsWith("https://m.youtube.com")) {
+              if (
+                url.startsWith("https://www.youtube.com") ||
+                url.startsWith("https://m.youtube.com") ||
+                url.startsWith("https://www.youtube-nocookie.com") ||
+                url.startsWith("https://music.youtube.com") ||
+                url.startsWith("https://youtu.be")
+              ) {
                 return false
               }
               return true
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+              super.onPageFinished(view, url)
+              if (url != null && url.startsWith("https://m.youtube.com/watch")) {
+                view?.evaluateJavascript(buildYouTubeMobileWatchBridgeJs(), null)
+              }
+            }
+
+            override fun onReceivedError(
+              view: WebView?,
+              request: WebResourceRequest?,
+              error: WebResourceError?,
+            ) {
+              super.onReceivedError(view, request, error)
+              if (request?.isForMainFrame == true) {
+                mainHandler.post {
+                  val safeId = sanitizeYouTubeVideoId(loadedInitialId ?: videoId)
+                  if (!mobileWatchFallbackActive && safeId.isNotBlank()) {
+                    mobileWatchFallbackActive = true
+                    loadUrl(
+                      resolveYouTubeInAppFallbackUrl(safeId),
+                      mapOf("Referer" to "https://m.youtube.com/"),
+                    )
+                  } else {
+                    latestError("Gagal memuat audio lagu di dalam aplikasi. Periksa koneksi internet lalu coba putar ulang.")
+                  }
+                }
+              }
             }
           }
         webChromeClient = WebChromeClient()
@@ -2501,14 +3071,34 @@ private fun YouTubeFullTrackEmbedPlayer(
             }
 
             @JavascriptInterface
+            fun onFallbackNeeded(code: Int) {
+              mainHandler.post {
+                val safeId = sanitizeYouTubeVideoId(loadedInitialId ?: videoId)
+                if (!mobileWatchFallbackActive && safeId.isNotBlank()) {
+                  mobileWatchFallbackActive = true
+                  loadUrl(
+                    resolveYouTubeInAppFallbackUrl(safeId),
+                    mapOf("Referer" to "https://m.youtube.com/"),
+                  )
+                } else if (isYouTubeEmbedFallbackErrorCode(code) && code != 0) {
+                  latestError("Koneksi pemutar lagu sedang bermasalah (kode $code). Ketuk putar untuk mencoba ulang.")
+                }
+              }
+            }
+
+            @JavascriptInterface
             fun onError(code: Int) {
               mainHandler.post {
-                val msg =
-                  when (code) {
-                    101, 150 -> "Video ini membatasi pemutaran sematan oleh pemiliknya. Ketuk 'Buka di YouTube' di bawah."
-                    else -> "Pemutar YouTube mengalami kendala (kode $code). Coba 'Buka di YouTube'."
-                  }
-                latestError(msg)
+                val safeId = sanitizeYouTubeVideoId(loadedInitialId ?: videoId)
+                if (!mobileWatchFallbackActive && safeId.isNotBlank()) {
+                  mobileWatchFallbackActive = true
+                  loadUrl(
+                    resolveYouTubeInAppFallbackUrl(safeId),
+                    mapOf("Referer" to "https://m.youtube.com/"),
+                  )
+                } else {
+                  latestError("Pemutar audio internal mengalami kendala (kode $code). Ketuk putar untuk mencoba lagi.")
+                }
               }
             }
           },
@@ -2539,7 +3129,6 @@ fun FullMusicPlayerScreen(
   DisposableEffect(Unit) {
     onDispose { onLeavingYouTubePlayer() }
   }
-  val context = LocalContext.current
   val tokens = LocalEvoriaTokens.current
   val track = playerState.currentTrack
   val isYouTubePlayingMode = playerState.isYouTubeMode && !playerState.activeYouTubeVideoId.isNullOrBlank()
@@ -2566,7 +3155,7 @@ fun FullMusicPlayerScreen(
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
           Text(
-            text = if (isYouTubePlayingMode) "YOUTUBE FULL AUDIO" else "MEMUTAR AUDIO PENUH",
+            text = if (isYouTubePlayingMode) "PEMUTAR AUDIO EVORIA" else "MEMUTAR AUDIO PENUH",
             style = MaterialTheme.typography.labelSmall,
             color = if (isYouTubePlayingMode) SpotifyEmerald else SpotifyTextMuted,
           )
@@ -2624,20 +3213,21 @@ fun FullMusicPlayerScreen(
 
       Spacer(modifier = Modifier.height(24.dp))
 
-      // Marquee Full Title
+      // Marquee Full Title only while actively playing to avoid idle display ticks
       val playerTitle = track?.title ?: "Tidak ada lagu dipilih"
+      val useTitleMarquee = playerState.isPlaying && playerTitle.length > 22
       Text(
         text = playerTitle,
         style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
         color = SpotifyTextPrimary,
         textAlign = TextAlign.Center,
         maxLines = 1,
-        softWrap = playerTitle.length <= 22,
+        softWrap = !useTitleMarquee,
         overflow = TextOverflow.Ellipsis,
         modifier =
           Modifier
             .fillMaxWidth()
-            .then(if (playerTitle.length > 22) Modifier.basicMarquee(iterations = Int.MAX_VALUE) else Modifier),
+            .then(if (useTitleMarquee) Modifier.basicMarquee(iterations = Int.MAX_VALUE) else Modifier),
       )
       Spacer(modifier = Modifier.height(6.dp))
       Text(
@@ -2647,19 +3237,6 @@ fun FullMusicPlayerScreen(
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
       )
-
-      if (track != null && (track.sourceType == "spotify" || !track.youtubeVideoId.isNullOrBlank())) {
-        Spacer(modifier = Modifier.height(10.dp))
-        OutlinedButton(
-          onClick = { openTrackOnYouTube(context, track) },
-          shape = RoundedCornerShape(50),
-          border = BorderStroke(1.dp, SpotifyEmerald.copy(alpha = 0.7f)),
-        ) {
-          Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, tint = SpotifyEmerald, modifier = Modifier.size(16.dp))
-          Spacer(modifier = Modifier.width(6.dp))
-          Text("Buka di YouTube", color = SpotifyEmerald)
-        }
-      }
 
       if (!playerState.errorMessage.isNullOrBlank()) {
         Spacer(modifier = Modifier.height(10.dp))

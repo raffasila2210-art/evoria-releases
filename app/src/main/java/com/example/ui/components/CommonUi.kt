@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.net.Uri
+import android.os.Build
+import android.view.ViewGroup
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -48,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +62,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -68,24 +73,40 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Precision
 import com.example.media.MusicPlayerState
 import com.example.ui.theme.LocalEvoriaTokens
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private val idLocale = Locale("id", "ID")
+private val indoDateFormatter: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("dd MMM yyyy", idLocale)
+private val indoDateTimeFormatter: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm", idLocale)
 
 fun formatIndoDate(millis: Long): String =
-  SimpleDateFormat("dd MMM yyyy", idLocale).format(Date(millis))
+  Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).format(indoDateFormatter)
 
 fun formatIndoDateTime(millis: Long): String =
-  SimpleDateFormat("dd MMM yyyy, HH:mm", idLocale).format(Date(millis))
+  Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).format(indoDateTimeFormatter)
 
 fun formatDurationMmSs(ms: Long): String {
   val totalSec = (ms / 1000L).coerceAtLeast(0L)
@@ -137,9 +158,9 @@ fun EvoriaCard(
         .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
     shape = RoundedCornerShape(tokens.cardRadius),
     color = containerColor,
-    tonalElevation = if (elevated) 3.dp else 1.dp,
-    shadowElevation = if (elevated) 4.dp else 1.dp,
-    border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.65f)),
+    tonalElevation = if (elevated) 2.dp else 0.dp,
+    shadowElevation = if (elevated) 2.dp else 0.dp,
+    border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.55f)),
   ) {
     Column(modifier = Modifier.padding(18.dp), content = content)
   }
@@ -305,12 +326,14 @@ fun EvoriaMiniPlayerBar(
       }
       Spacer(modifier = Modifier.width(10.dp))
       Column(modifier = Modifier.weight(1f)) {
+        val runMarquee = playerState.isPlaying && track.title.length > 20
         Text(
           text = track.title,
           style = MaterialTheme.typography.titleSmall,
           color = tokens.inkText,
           maxLines = 1,
-          modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE),
+          overflow = TextOverflow.Ellipsis,
+          modifier = if (runMarquee) Modifier.basicMarquee(iterations = Int.MAX_VALUE) else Modifier,
         )
         Text(
           text = track.artist,
@@ -350,11 +373,15 @@ fun EvoriaPillSearchBar(
   darkSpotifyStyle: Boolean = false,
 ) {
   val tokens = LocalEvoriaTokens.current
-  val pillGradient =
-    when {
-      darkSpotifyStyle -> listOf(Color(0xFF1F1F24), Color(0xFF25252B), Color(0xFF2B2B32))
-      tokens.isDark -> listOf(tokens.elevatedCard, tokens.cardSurface, tokens.secondarySurface)
-      else -> listOf(tokens.elevatedCard, tokens.secondarySurface, tokens.cardSurface)
+  val pillGradientBrush =
+    remember(darkSpotifyStyle, tokens.isDark, tokens.elevatedCard, tokens.cardSurface, tokens.secondarySurface) {
+      val colors =
+        when {
+          darkSpotifyStyle -> listOf(Color(0xFF1F1F24), Color(0xFF25252B), Color(0xFF2B2B32))
+          tokens.isDark -> listOf(tokens.elevatedCard, tokens.cardSurface, tokens.secondarySurface)
+          else -> listOf(tokens.elevatedCard, tokens.secondarySurface, tokens.cardSurface)
+        }
+      Brush.horizontalGradient(colors)
     }
   val rimBorderColor =
     when {
@@ -373,14 +400,14 @@ fun EvoriaPillSearchBar(
     shape = RoundedCornerShape(50),
     color = Color.Transparent,
     tonalElevation = 0.dp,
-    shadowElevation = if (tokens.isDark || darkSpotifyStyle) 6.dp else 8.dp,
+    shadowElevation = if (tokens.isDark || darkSpotifyStyle) 4.dp else 5.dp,
     border = BorderStroke(1.dp, rimBorderColor),
   ) {
     Row(
       modifier =
         Modifier
           .fillMaxSize()
-          .background(Brush.horizontalGradient(pillGradient))
+          .background(pillGradientBrush)
           .padding(start = 20.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -726,4 +753,102 @@ fun EvoriaSymmetricDialogShell(
       }
     }
   }
+}
+
+/**
+ * Muted, looping ExoPlayer backdrop surface with lifecycle-safe pause/resume/release
+ * and Robolectric/preview fallback safety.
+ */
+@Composable
+fun EvoriaLoopingVideoSurface(
+  videoUri: String,
+  modifier: Modifier = Modifier,
+) {
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+  val isInspection = LocalInspectionMode.current
+  val isRobolectric = remember { Build.FINGERPRINT.equals("robolectric", ignoreCase = true) }
+
+  if (isInspection || isRobolectric || videoUri.isBlank()) {
+    Box(
+      modifier =
+        modifier.background(
+          Brush.linearGradient(
+            listOf(Color(0xFF281D36), Color(0xFF3E264D), Color(0xFF1F1629))
+          )
+        )
+    )
+    return
+  }
+
+  val exoPlayer =
+    remember(videoUri) {
+      runCatching {
+        val loadControl =
+          DefaultLoadControl.Builder()
+            .setBufferDurationsMs(1500, 4000, 400, 800)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        ExoPlayer.Builder(context)
+          .setLoadControl(loadControl)
+          .build()
+          .apply {
+            trackSelectionParameters =
+              trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true).build()
+            volume = 0f
+            repeatMode = Player.REPEAT_MODE_ALL
+            setMediaItem(MediaItem.fromUri(Uri.parse(videoUri)))
+            prepare()
+            playWhenReady = true
+          }
+      }.getOrNull()
+    }
+
+  if (exoPlayer == null) {
+    Box(modifier = modifier.background(Color(0xFF251B30)))
+    return
+  }
+
+  DisposableEffect(lifecycleOwner, exoPlayer) {
+    val observer = LifecycleEventObserver { _, event ->
+      when (event) {
+        Lifecycle.Event.ON_START, Lifecycle.Event.ON_RESUME -> {
+          exoPlayer.playWhenReady = true
+        }
+        Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+          exoPlayer.playWhenReady = false
+        }
+        else -> Unit
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose {
+      lifecycleOwner.lifecycle.removeObserver(observer)
+      exoPlayer.release()
+    }
+  }
+
+  AndroidView(
+    factory = { ctx ->
+      PlayerView(ctx).apply {
+        layoutParams =
+          ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+          )
+        useController = false
+        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+        isClickable = false
+        isFocusable = false
+        player = exoPlayer
+      }
+    },
+    update = { view ->
+      if (view.player !== exoPlayer) {
+        view.player = exoPlayer
+      }
+    },
+    modifier = modifier,
+  )
 }

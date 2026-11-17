@@ -5,22 +5,35 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,8 +61,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Create
@@ -57,53 +74,71 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PhotoSizeSelectLarge
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
-import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -115,9 +150,11 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.local.KenanganCollectionEntity
 import com.example.data.local.LocalAlbumEntity
 import com.example.data.local.LocalMemoryEntity
 import com.example.data.local.UploadJobEntity
+import com.example.ui.AiMemoryDraftUiState
 import com.example.ui.components.EvoriaCard
 import com.example.ui.components.EvoriaFormTextField
 import com.example.ui.components.EvoriaPillSearchBar
@@ -130,10 +167,15 @@ import com.example.ui.components.formatIndoDate
 import com.example.ui.components.formatIndoDateTime
 import com.example.ui.components.rememberThumbnailRequest
 import com.example.ui.theme.LocalEvoriaTokens
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
+import com.example.util.MediaStorageHelper
+import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 fun filterAndSortMemories(
   memories: List<LocalMemoryEntity>,
@@ -173,20 +215,35 @@ fun filterAndSortMemories(
 }
 
 fun formatGallerySectionHeader(millis: Long, nowMillis: Long = System.currentTimeMillis()): String {
-  val targetCal = Calendar.getInstance().apply { timeInMillis = millis }
-  val todayCal = Calendar.getInstance().apply { timeInMillis = nowMillis }
-  val yesterdayCal = Calendar.getInstance().apply {
-    timeInMillis = nowMillis
-    add(Calendar.DAY_OF_YEAR, -1)
-  }
-  return when {
-    targetCal.get(Calendar.YEAR) == todayCal.get(Calendar.YEAR) &&
-      targetCal.get(Calendar.DAY_OF_YEAR) == todayCal.get(Calendar.DAY_OF_YEAR) -> "Hari ini"
-    targetCal.get(Calendar.YEAR) == yesterdayCal.get(Calendar.YEAR) &&
-      targetCal.get(Calendar.DAY_OF_YEAR) == yesterdayCal.get(Calendar.DAY_OF_YEAR) -> "Kemarin"
+  val zone = ZoneId.systemDefault()
+  val targetDate = Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
+  val today = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
+  return when (targetDate) {
+    today -> "Hari ini"
+    today.minusDays(1) -> "Kemarin"
     else -> formatIndoDate(millis)
   }
 }
+
+fun computeRangeSelection(
+  orderedIds: List<String>,
+  anchorId: String,
+  hoveredId: String,
+  baseSelection: Set<String> = emptySet(),
+): Set<String> {
+  val startIdx = orderedIds.indexOf(anchorId)
+  val endIdx = orderedIds.indexOf(hoveredId)
+  if (startIdx < 0 || endIdx < 0) return baseSelection + anchorId
+  val lo = minOf(startIdx, endIdx)
+  val hi = maxOf(startIdx, endIdx)
+  return baseSelection + orderedIds.subList(lo, hi + 1)
+}
+
+private fun findMemoryIdAtRootPoint(
+  rootPoint: Offset,
+  tileBounds: Map<String, Rect>,
+): String? =
+  tileBounds.entries.firstOrNull { (_, rect) -> rect.contains(rootPoint) }?.key
 
 private data class GalleryDaySection(
   val dayKey: String,
@@ -199,23 +256,17 @@ private fun groupMemoriesByGalleryDay(
   nowMillis: Long = System.currentTimeMillis(),
 ): List<GalleryDaySection> {
   if (memories.isEmpty()) return emptyList()
-  val cal = Calendar.getInstance().apply { timeInMillis = nowMillis }
-  val todayYear = cal.get(Calendar.YEAR)
-  val todayDay = cal.get(Calendar.DAY_OF_YEAR)
-  cal.add(Calendar.DAY_OF_YEAR, -1)
-  val yesterdayYear = cal.get(Calendar.YEAR)
-  val yesterdayDay = cal.get(Calendar.DAY_OF_YEAR)
-  val formatter = SimpleDateFormat("dd MMM yyyy", Locale("id", "ID"))
+  val zone = ZoneId.systemDefault()
+  val today = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
+  val yesterday = today.minusDays(1)
 
   return memories
     .groupBy { mem ->
-      cal.timeInMillis = mem.memoryDateMillis
-      val y = cal.get(Calendar.YEAR)
-      val d = cal.get(Calendar.DAY_OF_YEAR)
-      when {
-        y == todayYear && d == todayDay -> "Hari ini"
-        y == yesterdayYear && d == yesterdayDay -> "Kemarin"
-        else -> formatter.format(Date(mem.memoryDateMillis))
+      val d = Instant.ofEpochMilli(mem.memoryDateMillis).atZone(zone).toLocalDate()
+      when (d) {
+        today -> "Hari ini"
+        yesterday -> "Kemarin"
+        else -> formatIndoDate(mem.memoryDateMillis)
       }
     }
     .map { (dayLabel, dayItems) ->
@@ -229,12 +280,20 @@ private fun groupMemoriesByGalleryDay(
     }
 }
 
+enum class KenanganSubPage(val labelId: String) {
+  KENANGAN("Kenangan"),
+  ALBUM("Album"),
+  GALERI("Galeri"),
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GalleryMediaTile(
   memory: LocalMemoryEntity,
   isSelected: Boolean = false,
   multiSelectMode: Boolean = false,
   onClick: () -> Unit,
+  onLongClick: (() -> Unit)? = null,
   onToggleFavorite: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
@@ -255,11 +314,14 @@ fun GalleryMediaTile(
           if (isSelected) Modifier.border(3.dp, tokens.primaryTerracotta, RoundedCornerShape(2.dp))
           else Modifier
         )
-        .clickable(onClick = onClick)
+        .combinedClickable(
+          onClick = onClick,
+          onLongClick = onLongClick,
+        )
         .testTag("memory_card_${memory.id}"),
   ) {
     if (memory.mediaUri != null) {
-      val thumbRequest = rememberThumbnailRequest(memory.mediaUri, sizePx = 360)
+      val thumbRequest = rememberThumbnailRequest(memory.mediaUri, sizePx = 240)
       AsyncImage(
         model = thumbRequest,
         contentDescription = memory.title,
@@ -268,12 +330,12 @@ fun GalleryMediaTile(
       )
     } else {
       Box(
-        modifier = Modifier.fillMaxSize().padding(10.dp),
+        modifier = Modifier.fillMaxSize().padding(8.dp),
         contentAlignment = Alignment.Center,
       ) {
         Text(
           text = memory.story.ifBlank { memory.caption.ifBlank { memory.title } },
-          style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Serif),
+          style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Serif),
           color = tokens.inkText,
           maxLines = 4,
           overflow = TextOverflow.Ellipsis,
@@ -283,7 +345,7 @@ fun GalleryMediaTile(
     }
 
     if (isSelected) {
-      Box(modifier = Modifier.fillMaxSize().background(tokens.primaryTerracotta.copy(alpha = 0.24f)))
+      Box(modifier = Modifier.fillMaxSize().background(tokens.primaryTerracotta.copy(alpha = 0.28f)))
     }
 
     if (multiSelectMode) {
@@ -291,10 +353,10 @@ fun GalleryMediaTile(
         modifier =
           Modifier
             .align(Alignment.TopStart)
-            .padding(6.dp)
-            .size(22.dp)
+            .padding(5.dp)
+            .size(20.dp)
             .clip(CircleShape)
-            .background(if (isSelected) tokens.primaryTerracotta else Color.Black.copy(alpha = 0.42f))
+            .background(if (isSelected) tokens.primaryTerracotta else Color.Black.copy(alpha = 0.45f))
             .border(1.5.dp, Color.White, CircleShape),
         contentAlignment = Alignment.Center,
       ) {
@@ -303,7 +365,7 @@ fun GalleryMediaTile(
             imageVector = Icons.Filled.Check,
             contentDescription = "Terpilih",
             tint = Color.White,
-            modifier = Modifier.size(14.dp),
+            modifier = Modifier.size(13.dp),
           )
         }
       }
@@ -312,11 +374,11 @@ fun GalleryMediaTile(
     if (isVideo) {
       Surface(
         shape = RoundedCornerShape(50),
-        color = Color.Black.copy(alpha = 0.46f),
-        modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+        color = Color.Black.copy(alpha = 0.52f),
+        modifier = Modifier.align(Alignment.BottomStart).padding(4.dp),
       ) {
         Row(
-          modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+          modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
@@ -324,7 +386,7 @@ fun GalleryMediaTile(
             imageVector = Icons.Filled.PlayArrow,
             contentDescription = "Video",
             tint = Color.White,
-            modifier = Modifier.size(13.dp),
+            modifier = Modifier.size(11.dp),
           )
           Text(
             text = "Video",
@@ -335,13 +397,13 @@ fun GalleryMediaTile(
       }
     }
 
-    if (memory.isFavorite) {
+    if (memory.isFavorite && !multiSelectMode) {
       Box(
         modifier =
           Modifier
             .align(Alignment.TopEnd)
-            .padding(5.dp)
-            .size(22.dp)
+            .padding(4.dp)
+            .size(20.dp)
             .clip(CircleShape)
             .background(Color.Black.copy(alpha = 0.35f))
             .then(
@@ -354,20 +416,25 @@ fun GalleryMediaTile(
           imageVector = Icons.Filled.Favorite,
           contentDescription = "Kenangan favorit",
           tint = Color(0xFFFF6B6B),
-          modifier = Modifier.size(13.dp),
+          modifier = Modifier.size(12.dp),
         )
       }
     }
   }
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun KenanganScreen(
   albums: List<LocalAlbumEntity>,
   memories: List<LocalMemoryEntity>,
+  kenanganCollections: List<KenanganCollectionEntity> = emptyList(),
   favoritesOnlyDefault: Boolean = false,
   onConsumeFavoritesDefault: () -> Unit = {},
   onOpenAlbum: (String) -> Unit,
+  onOpenKenangan: (String) -> Unit = {},
+  onCreateKenangan: (title: String, description: String, albumIds: List<String>, visibility: String) -> Unit = { _, _, _, _ -> },
+  onDeleteKenangan: (String) -> Unit = {},
   onOpenMemory: (String) -> Unit,
   onOpenAddMemory: () -> Unit,
   onImportGalleryPhotos: (List<Uri>) -> Unit = {},
@@ -375,34 +442,46 @@ fun KenanganScreen(
   onToggleFavorite: (LocalMemoryEntity) -> Unit,
   onDeleteMemories: (List<LocalMemoryEntity>) -> Unit,
 ) {
+  val context = LocalContext.current
   val tokens = LocalEvoriaTokens.current
-  var isGrid by rememberSaveable { mutableStateOf(true) }
+  var activeSubPage by rememberSaveable {
+    mutableStateOf(if (favoritesOnlyDefault) KenanganSubPage.GALERI else KenanganSubPage.KENANGAN)
+  }
   var sortNewestFirst by rememberSaveable { mutableStateOf(true) }
   var filterMode by rememberSaveable {
     mutableStateOf(if (favoritesOnlyDefault) "favorite" else "all")
   }
-  var selectedAlbumFilterId by rememberSaveable { mutableStateOf<String?>(null) }
   var searchQuery by rememberSaveable { mutableStateOf("") }
   var multiSelectMode by remember { mutableStateOf(false) }
   var selectedIds by remember { mutableStateOf(setOf<String>()) }
+  var confirmBatchDelete by remember { mutableStateOf(false) }
   var showAlbumDialog by remember { mutableStateOf(false) }
+  var showCreateKenanganDialog by remember { mutableStateOf(false) }
+  var kenanganPendingDelete by remember { mutableStateOf<KenanganCollectionEntity?>(null) }
   var fabMenuExpanded by remember { mutableStateOf(false) }
 
   LaunchedEffect(favoritesOnlyDefault) {
     if (favoritesOnlyDefault) {
+      activeSubPage = KenanganSubPage.GALERI
       filterMode = "favorite"
       onConsumeFavoritesDefault()
     }
   }
 
-  LaunchedEffect(filterMode, selectedAlbumFilterId, searchQuery) {
+  LaunchedEffect(filterMode, searchQuery, activeSubPage) {
     if (multiSelectMode) {
       selectedIds = emptySet()
     }
   }
 
-  BackHandler(enabled = fabMenuExpanded) {
-    fabMenuExpanded = false
+  BackHandler(enabled = fabMenuExpanded || multiSelectMode) {
+    when {
+      fabMenuExpanded -> fabMenuExpanded = false
+      multiSelectMode -> {
+        multiSelectMode = false
+        selectedIds = emptySet()
+      }
+    }
   }
 
   val galleryDirectPicker =
@@ -412,34 +491,82 @@ fun KenanganScreen(
       }
     }
 
-  val filteredMemories = remember(memories, filterMode, sortNewestFirst, selectedAlbumFilterId, searchQuery) {
+  val filteredKenanganCollections =
+    remember(kenanganCollections, searchQuery, filterMode, sortNewestFirst, albums) {
+      val q = searchQuery.trim()
+      val albumMap = albums.associateBy { it.id }
+      val base =
+        kenanganCollections.filter { col ->
+          val visOk =
+            when (filterMode) {
+              "private" -> col.visibility.equals("private", ignoreCase = true)
+              "shared" -> col.visibility.equals("shared", ignoreCase = true)
+              else -> true
+            }
+          if (!visOk) return@filter false
+          if (q.isEmpty()) return@filter true
+          val albumTitles = col.albumIdList().mapNotNull { albumMap[it]?.title }.joinToString(" ")
+          col.title.contains(q, ignoreCase = true) ||
+            col.description.contains(q, ignoreCase = true) ||
+            albumTitles.contains(q, ignoreCase = true)
+        }
+      if (sortNewestFirst) base.sortedByDescending { it.updatedAtMillis } else base.sortedBy { it.updatedAtMillis }
+    }
+
+  val galleryMemories = remember(memories, filterMode, sortNewestFirst, searchQuery) {
+    val effectiveFilter =
+      when (filterMode) {
+        "favorite", "photo", "video", "private", "shared" -> filterMode
+        else -> "all"
+      }
+    val mediaOnly = memories.filter { !it.mediaUri.isNullOrBlank() || it.mediaType == "story" }
     filterAndSortMemories(
-      memories = memories,
-      filterMode = filterMode,
+      memories = mediaOnly,
+      filterMode = effectiveFilter,
       sortNewestFirst = sortNewestFirst,
-      albumFilterId = selectedAlbumFilterId,
+      albumFilterId = null,
       searchQuery = searchQuery,
     )
   }
 
-  val activeAlbumTitle =
-    selectedAlbumFilterId?.let { id -> albums.firstOrNull { it.id == id }?.title }
+  val filteredAlbums = remember(albums, searchQuery, sortNewestFirst) {
+    val q = searchQuery.trim()
+    val base =
+      if (q.isEmpty()) albums
+      else albums.filter {
+        it.title.contains(q, ignoreCase = true) ||
+          it.description.contains(q, ignoreCase = true) ||
+          it.soundtrackTitle.orEmpty().contains(q, ignoreCase = true)
+      }
+    if (sortNewestFirst) base.sortedByDescending { it.updatedAtMillis } else base.sortedBy { it.updatedAtMillis }
+  }
+
+  val albumCounts = remember(memories) {
+    memories.mapNotNull { it.albumId }.groupingBy { it }.eachCount()
+  }
+  val albumsById = remember(albums) { albums.associateBy { it.id } }
+
+  val tileBounds = remember { mutableMapOf<String, Rect>() }
+  var gridBoundsRoot by remember { mutableStateOf(Rect.Zero) }
 
   Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().padding(bottom = 96.dp)) {
-      // Header + actions
       Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Column(modifier = Modifier.weight(1f)) {
-          Text("Kenangan", style = MaterialTheme.typography.displayMedium, color = tokens.inkText)
+          Text(
+            text = activeSubPage.labelId,
+            style = MaterialTheme.typography.displayMedium,
+            color = tokens.inkText,
+          )
           val countText =
-            if (filterMode == "all" && selectedAlbumFilterId == null) {
-              "${memories.size} momen • ${albums.size} album"
-            } else {
-              "Menampilkan ${filteredMemories.size} dari ${memories.size} momen"
+            when (activeSubPage) {
+              KenanganSubPage.KENANGAN -> "${filteredKenanganCollections.size} gabungan album"
+              KenanganSubPage.ALBUM -> "${albums.size} album tersimpan"
+              KenanganSubPage.GALERI -> "${galleryMemories.size} foto & video"
             }
           Text(
             text = "$countText • ${if (sortNewestFirst) "Terbaru" else "Terlama"}",
@@ -449,7 +576,22 @@ fun KenanganScreen(
             overflow = TextOverflow.Ellipsis,
           )
         }
-        Row {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          if (activeSubPage == KenanganSubPage.GALERI) {
+            IconButton(
+              onClick = {
+                multiSelectMode = !multiSelectMode
+                if (!multiSelectMode) selectedIds = emptySet()
+              },
+              modifier = Modifier.minimumInteractiveComponentSize().testTag("kenangan_multiselect_toggle"),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Checklist,
+                contentDescription = if (multiSelectMode) "Keluar pilih banyak" else "Pilih banyak foto",
+                tint = if (multiSelectMode) tokens.primaryTerracotta else tokens.inkText,
+              )
+            }
+          }
           IconButton(
             onClick = { sortNewestFirst = !sortNewestFirst },
             modifier = Modifier.minimumInteractiveComponentSize().testTag("kenangan_sort_toggle"),
@@ -460,115 +602,47 @@ fun KenanganScreen(
               tint = if (sortNewestFirst) tokens.inkText else tokens.primaryTerracotta,
             )
           }
-          IconButton(
-            onClick = { isGrid = !isGrid },
-            modifier = Modifier.minimumInteractiveComponentSize().testTag("toggle_grid_timeline"),
-          ) {
-            Icon(
-              imageVector = if (isGrid) Icons.Filled.ViewAgenda else Icons.Filled.GridView,
-              contentDescription = if (isGrid) "Tampilan Linimasa" else "Tampilan Grid",
-              tint = tokens.inkText,
-            )
-          }
         }
       }
 
-      EvoriaPillSearchBar(
-        query = searchQuery,
-        onQueryChange = { searchQuery = it },
-        onSearch = {},
-        placeholder = "Cari kenangan...",
-        inputTestTag = "kenangan_search_input",
-        submitTestTag = "kenangan_search_submit",
-        modifier = Modifier.padding(horizontal = 20.dp),
-      )
-      Spacer(modifier = Modifier.height(6.dp))
-
-      if (multiSelectMode) {
-        Surface(
-          color = tokens.accentPeach.copy(alpha = 0.25f),
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
-          shape = RoundedCornerShape(16.dp),
-        ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-          ) {
-            Text("${selectedIds.size} dipilih", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
-            Row {
-              TextButton(
-                onClick = {
-                  val targets = memories.filter { it.id in selectedIds }
-                  onDeleteMemories(targets)
-                  selectedIds = emptySet()
-                  multiSelectMode = false
-                }
-              ) {
-                Text("Hapus", color = tokens.roseError)
-              }
-              TextButton(
-                onClick = {
-                  selectedIds = emptySet()
-                  multiSelectMode = false
-                }
-              ) {
-                Text("Selesai", color = tokens.primaryTerracotta)
-              }
-            }
-          }
-        }
-      }
-
-      // Albums Carousel
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+      Surface(
+        shape = RoundedCornerShape(50),
+        color = tokens.secondarySurface.copy(alpha = if (tokens.isDark) 0.72f else 0.85f),
+        border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.6f)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
       ) {
-        Text("Album Kita", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
-        TextButton(
-          onClick = { showAlbumDialog = true },
-          modifier = Modifier.testTag("create_album_button"),
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(4.dp),
+          horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-          Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-          Spacer(modifier = Modifier.width(4.dp))
-          Text("Album Baru", color = tokens.primaryTerracotta)
-        }
-      }
-
-      LazyRow(
-        contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        items(albums, key = { it.id }, contentType = { "album_card" }) { album ->
-          val count = remember(memories, album.id) { memories.count { it.albumId == album.id } }
-          Surface(
-            modifier = Modifier.width(152.dp).clickable { onOpenAlbum(album.id) },
-            shape = RoundedCornerShape(18.dp),
-            color = tokens.cardSurface,
-            border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.6f)),
-          ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-              Box(
-                modifier = Modifier.fillMaxWidth().height(84.dp).clip(RoundedCornerShape(12.dp)).background(tokens.accentPeach.copy(alpha = 0.25f)),
-                contentAlignment = Alignment.Center,
-              ) {
-                if (album.coverUri != null) {
-                  val coverRequest = rememberThumbnailRequest(album.coverUri, sizePx = 320)
-                  AsyncImage(
-                    model = coverRequest,
-                    contentDescription = album.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                  )
-                } else {
-                  Icon(Icons.Filled.Collections, contentDescription = null, tint = tokens.primaryTerracotta)
-                }
-              }
-              Spacer(modifier = Modifier.height(8.dp))
-              Text(album.title, style = MaterialTheme.typography.titleSmall, color = tokens.inkText, maxLines = 1, overflow = TextOverflow.Ellipsis)
-              Text("$count item • ${if (album.visibility == "shared") "Bersama" else "Pribadi"}", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+          KenanganSubPage.entries.forEach { page ->
+            val selected = activeSubPage == page
+            Surface(
+              shape = RoundedCornerShape(50),
+              color = if (selected) tokens.primaryTerracotta else Color.Transparent,
+              modifier =
+                Modifier
+                  .weight(1f)
+                  .clip(RoundedCornerShape(50))
+                  .clickable {
+                    activeSubPage = page
+                    if (page != KenanganSubPage.GALERI) {
+                      multiSelectMode = false
+                      selectedIds = emptySet()
+                    }
+                  }
+                  .testTag("kenangan_subtab_${page.name.lowercase()}"),
+            ) {
+              Text(
+                text = page.labelId,
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                ),
+                color = if (selected) Color.White else tokens.mutedText,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                modifier = Modifier.padding(vertical = 9.dp, horizontal = 8.dp),
+              )
             }
           }
         }
@@ -576,194 +650,565 @@ fun KenanganScreen(
 
       Spacer(modifier = Modifier.height(10.dp))
 
-      // Filter Chips
-      LazyRow(
-        contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        val filters = listOf(
-          "all" to "Semua",
-          "private" to "Pribadi",
-          "shared" to "Bersama",
-          "favorite" to "Favorit",
-          "photo" to "Foto",
-          "video" to "Video",
-          "story" to "Cerita",
-        )
-        items(filters) { (key, label) ->
-          FilterChip(
-            selected = filterMode == key,
-            onClick = { filterMode = key },
-            label = { Text(label) },
-            modifier = Modifier.testTag("kenangan_filter_$key"),
-          )
-        }
-        if (albums.isNotEmpty()) {
-          items(albums, key = { "filter_alb_${it.id}" }) { alb ->
-            val albSelected = selectedAlbumFilterId == alb.id
-            FilterChip(
-              selected = albSelected,
-              onClick = {
-                selectedAlbumFilterId = if (albSelected) null else alb.id
-              },
-              leadingIcon = {
-                Icon(Icons.Filled.Collections, contentDescription = null, modifier = Modifier.size(14.dp))
-              },
-              label = { Text(alb.title, maxLines = 1) },
-            )
-          }
-        }
-        item {
-          FilterChip(
-            selected = multiSelectMode,
-            onClick = {
-              multiSelectMode = !multiSelectMode
-              if (!multiSelectMode) selectedIds = emptySet()
-            },
-            label = { Text("Pilih Banyak") },
-          )
-        }
-      }
+      EvoriaPillSearchBar(
+        query = searchQuery,
+        onQueryChange = { searchQuery = it },
+        onSearch = {},
+        placeholder =
+          when (activeSubPage) {
+            KenanganSubPage.KENANGAN -> "Cari kompilasi kenangan atau album..."
+            KenanganSubPage.ALBUM -> "Cari album..."
+            KenanganSubPage.GALERI -> "Cari foto, video, atau lokasi..."
+          },
+        inputTestTag = "kenangan_search_input",
+        submitTestTag = "kenangan_search_submit",
+        modifier = Modifier.padding(horizontal = 20.dp),
+      )
+      Spacer(modifier = Modifier.height(6.dp))
 
-      Spacer(modifier = Modifier.height(8.dp))
-
-      if (filteredMemories.isEmpty()) {
-        Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-          EvoriaCard {
-            val emptyArtReq = rememberThumbnailRequest(R.drawable.img_empty_memories_1794808523116, sizePx = 640)
-            AsyncImage(
-              model = emptyArtReq,
-              contentDescription = "Tidak ada kenangan",
-              modifier = Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)),
-              contentScale = ContentScale.Crop,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-              text =
-                if (activeAlbumTitle != null) "Belum ada kenangan di album \"$activeAlbumTitle\""
-                else "Belum ada kenangan di filter ini",
-              style = MaterialTheme.typography.titleMedium,
-              color = tokens.inkText,
-            )
-            Text(
-              "Tambahkan foto, video, atau cerita baru dengan tombol + di kanan bawah.",
-              style = MaterialTheme.typography.bodySmall,
-              color = tokens.mutedText,
-            )
-            if (filterMode != "all" || selectedAlbumFilterId != null) {
-              Spacer(modifier = Modifier.height(10.dp))
-              OutlinedButton(
-                onClick = {
-                  filterMode = "all"
-                  selectedAlbumFilterId = null
-                },
-                shape = RoundedCornerShape(50),
-                modifier = Modifier.testTag("kenangan_reset_filter"),
-              ) {
-                Text("Tampilkan Semua Kenangan")
-              }
-            }
-          }
-        }
-      } else if (isGrid) {
-        val groupedSections =
-          remember(filteredMemories) {
-            groupMemoriesByGalleryDay(filteredMemories)
-          }
-
-        LazyVerticalGrid(
-          columns = GridCells.Adaptive(minSize = 104.dp),
-          modifier = Modifier.weight(1f),
-          contentPadding = PaddingValues(top = 6.dp, bottom = 36.dp),
-          horizontalArrangement = Arrangement.spacedBy(2.dp),
-          verticalArrangement = Arrangement.spacedBy(2.dp),
+      AnimatedVisibility(visible = multiSelectMode && activeSubPage == KenanganSubPage.GALERI) {
+        Surface(
+          color = tokens.elevatedCard,
+          border = BorderStroke(1.dp, tokens.primaryTerracotta.copy(alpha = 0.45f)),
+          shadowElevation = 2.dp,
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+          shape = RoundedCornerShape(18.dp),
         ) {
-          groupedSections.forEach { section ->
-            item(
-              key = "hdr_${section.dayKey}",
-              span = { GridItemSpan(maxLineSpan) },
-              contentType = "gallery_header",
+          Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-              Row(
-                modifier =
-                  Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-              ) {
+              Column(modifier = Modifier.weight(1f)) {
                 Text(
-                  text = section.dayKey,
+                  text = "${selectedIds.size} dipilih",
                   style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                   color = tokens.inkText,
                 )
-                if (section.locationSummary.isNotBlank()) {
+                Text(
+                  text = "Tahan & seret jari di foto untuk pilih rentang sekaligus",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = tokens.mutedText,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+              }
+              Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(
+                  onClick = {
+                    val allIds = galleryMemories.map { it.id }.toSet()
+                    selectedIds = if (selectedIds.size == allIds.size && allIds.isNotEmpty()) emptySet() else allIds
+                  },
+                  modifier = Modifier.testTag("kenangan_multiselect_select_all"),
+                ) {
+                  Icon(Icons.Filled.SelectAll, contentDescription = null, modifier = Modifier.size(16.dp))
+                  Spacer(modifier = Modifier.width(4.dp))
                   Text(
-                    text = section.locationSummary,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = tokens.mutedText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    if (selectedIds.size == galleryMemories.size && galleryMemories.isNotEmpty()) "Batal Semua"
+                    else "Pilih Semua",
                   )
+                }
+                TextButton(
+                  onClick = {
+                    selectedIds = emptySet()
+                    multiSelectMode = false
+                  },
+                  modifier = Modifier.testTag("kenangan_multiselect_close"),
+                ) {
+                  Text("Selesai", color = tokens.mutedText)
                 }
               }
             }
-            items(
-              items = section.items,
-              key = { it.id },
-              contentType = { "gallery_tile" },
-            ) { mem ->
-              val isSelected = mem.id in selectedIds
-              GalleryMediaTile(
-                memory = mem,
-                isSelected = isSelected,
-                multiSelectMode = multiSelectMode,
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Button(
+                enabled = selectedIds.isNotEmpty(),
                 onClick = {
-                  if (multiSelectMode) {
-                    selectedIds = if (isSelected) selectedIds - mem.id else selectedIds + mem.id
-                  } else {
-                    onOpenMemory(mem.id)
-                  }
+                  val targets = memories.filter { it.id in selectedIds }
+                  MediaStorageHelper.shareMemoriesViaAllApps(context, targets)
                 },
-                onToggleFavorite = { onToggleFavorite(mem) },
-              )
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
+                modifier = Modifier.weight(1f).height(42.dp).testTag("kenangan_multiselect_share"),
+              ) {
+                Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Bagikan", maxLines = 1)
+              }
+              OutlinedButton(
+                enabled = selectedIds.isNotEmpty(),
+                onClick = { confirmBatchDelete = true },
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, tokens.roseError.copy(alpha = 0.7f)),
+                modifier = Modifier.weight(1f).height(42.dp).testTag("kenangan_multiselect_delete"),
+              ) {
+                Icon(Icons.Filled.Delete, contentDescription = null, tint = tokens.roseError, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Hapus", color = tokens.roseError, maxLines = 1)
+              }
             }
           }
         }
-      } else {
-        LazyColumn(
-          modifier = Modifier.weight(1f),
-          contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 36.dp),
-          verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-          items(
-            items = filteredMemories,
-            key = { it.id },
-            contentType = { "timeline_card" },
-          ) { mem ->
-            EvoriaCard(onClick = { onOpenMemory(mem.id) }) {
+      }
+
+      AnimatedContent(
+        targetState = activeSubPage,
+        transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+        modifier = Modifier.weight(1f),
+        label = "kenangan_subpage_transition",
+      ) { subPage ->
+        when (subPage) {
+          KenanganSubPage.KENANGAN -> {
+            Column(modifier = Modifier.fillMaxSize()) {
               Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
               ) {
-                Text(formatIndoDate(mem.memoryDateMillis), style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
-                VisibilityBadge(mem.visibility)
+                Column(modifier = Modifier.weight(1f)) {
+                  Text("Kompilasi Kenangan", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+                  Text(
+                    "Gabungkan beberapa album jadi satu kenangan utuh",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tokens.mutedText,
+                  )
+                }
+                OutlinedButton(
+                  onClick = { showCreateKenanganDialog = true },
+                  shape = RoundedCornerShape(50),
+                  border = BorderStroke(1.dp, tokens.primaryTerracotta.copy(alpha = 0.65f)),
+                  contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                  modifier = Modifier.testTag("create_kenangan_collection_button"),
+                ) {
+                  Icon(Icons.Filled.AutoStories, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(16.dp))
+                  Spacer(modifier = Modifier.width(5.dp))
+                  Text("Buat Kenangan", color = tokens.primaryTerracotta, maxLines = 1)
+                }
               }
-              Spacer(modifier = Modifier.height(6.dp))
-              if (mem.mediaUri != null) {
-                val timelineRequest = rememberThumbnailRequest(mem.mediaUri, sizePx = 640)
-                AsyncImage(
-                  model = timelineRequest,
-                  contentDescription = mem.title,
-                  modifier = Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(14.dp)),
-                  contentScale = ContentScale.Crop,
+
+              LazyRow(
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                val filters = listOf("all" to "Semua", "private" to "Pribadi", "shared" to "Bersama")
+                items(filters) { (key, label) ->
+                  FilterChip(
+                    selected = filterMode == key,
+                    onClick = { filterMode = key },
+                    label = { Text(label) },
+                    modifier = Modifier.testTag("kenangan_filter_$key"),
+                  )
+                }
+              }
+
+              if (filteredKenanganCollections.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                  EvoriaCard {
+                    val emptyArtReq = rememberThumbnailRequest(R.drawable.img_empty_memories_1794808523116, sizePx = 540)
+                    AsyncImage(
+                      model = emptyArtReq,
+                      contentDescription = "Belum ada kompilasi kenangan",
+                      modifier = Modifier.fillMaxWidth().height(136.dp).clip(RoundedCornerShape(14.dp)),
+                      contentScale = ContentScale.Crop,
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                      text = "Kenangan Adalah Gabungan Album",
+                      style = MaterialTheme.typography.titleMedium,
+                      color = tokens.inkText,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                      text =
+                        if (albums.isEmpty()) {
+                          "Buat album di tab Album terlebih dahulu, lalu gabungkan beberapa album menjadi satu Kenangan spesial."
+                        } else {
+                          "Pilih dua atau lebih album yang sudah ada untuk digabungkan ke dalam satu halaman Kenangan."
+                        },
+                      style = MaterialTheme.typography.bodySmall,
+                      color = tokens.mutedText,
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                      onClick = {
+                        if (albums.isEmpty()) {
+                          activeSubPage = KenanganSubPage.ALBUM
+                          showAlbumDialog = true
+                        } else {
+                          showCreateKenanganDialog = true
+                        }
+                      },
+                      shape = RoundedCornerShape(50),
+                      colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
+                      modifier = Modifier.fillMaxWidth().testTag("kenangan_empty_cta_button"),
+                    ) {
+                      Text(if (albums.isEmpty()) "Buat Album Pertama" else "Gabungkan Album Sekarang")
+                    }
+                  }
+                }
+              } else {
+                LazyColumn(
+                  modifier = Modifier.weight(1f).testTag("kenangan_list"),
+                  contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 36.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                  items(
+                    items = filteredKenanganCollections,
+                    key = { it.id },
+                    contentType = { "kenangan_collection_card" },
+                  ) { col ->
+                    val mergedIds = col.albumIdList()
+                    val mergedAlbums = mergedIds.mapNotNull { albumsById[it] }
+                    val mergedMemories = memories.filter { it.albumId in mergedIds }
+                    val heroCover =
+                      col.coverUri
+                        ?: mergedAlbums.firstNotNullOfOrNull { it.coverUri }
+                        ?: mergedMemories.firstOrNull { !it.mediaUri.isNullOrBlank() }?.mediaUri
+
+                    Surface(
+                      shape = RoundedCornerShape(tokens.cardRadius),
+                      color = tokens.elevatedCard,
+                      border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.55f)),
+                      modifier =
+                        Modifier
+                          .fillMaxWidth()
+                          .clip(RoundedCornerShape(tokens.cardRadius))
+                          .clickable { onOpenKenangan(col.id) }
+                          .testTag("kenangan_collection_${col.id}"),
+                    ) {
+                      Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.SpaceBetween,
+                          verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(Icons.Filled.AutoStories, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(16.dp))
+                            Text(
+                              text = "${mergedAlbums.size} Album • ${mergedMemories.size} Item",
+                              style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                              color = tokens.primaryTerracotta,
+                            )
+                          }
+                          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            VisibilityBadge(col.visibility)
+                            IconButton(
+                              onClick = { kenanganPendingDelete = col },
+                              modifier = Modifier.size(30.dp).testTag("delete_kenangan_${col.id}"),
+                            ) {
+                              Icon(Icons.Filled.Delete, contentDescription = "Hapus ${col.title}", tint = tokens.roseError, modifier = Modifier.size(18.dp))
+                            }
+                          }
+                        }
+
+                        if (!heroCover.isNullOrBlank()) {
+                          Spacer(modifier = Modifier.height(10.dp))
+                          val coverReq = rememberThumbnailRequest(heroCover, sizePx = 540)
+                          AsyncImage(
+                            model = coverReq,
+                            contentDescription = col.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxWidth().height(164.dp).clip(RoundedCornerShape(14.dp)),
+                          )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                          text = col.title,
+                          style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                          color = tokens.inkText,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis,
+                        )
+                        if (col.description.isNotBlank()) {
+                          Spacer(modifier = Modifier.height(3.dp))
+                          Text(
+                            text = col.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = tokens.mutedText,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                        }
+                        if (mergedAlbums.isNotEmpty()) {
+                          Spacer(modifier = Modifier.height(8.dp))
+                          FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                          ) {
+                            mergedAlbums.forEach { alb ->
+                              Surface(
+                                shape = RoundedCornerShape(50),
+                                color = tokens.secondarySurface,
+                                border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.6f)),
+                              ) {
+                                Text(
+                                  text = alb.title,
+                                  style = MaterialTheme.typography.labelSmall,
+                                  color = tokens.inkText,
+                                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                )
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          KenanganSubPage.ALBUM -> {
+            Column(modifier = Modifier.fillMaxSize()) {
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Text("Koleksi Album", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+                OutlinedButton(
+                  onClick = { showAlbumDialog = true },
+                  shape = RoundedCornerShape(50),
+                  border = BorderStroke(1.dp, tokens.primaryTerracotta.copy(alpha = 0.6f)),
+                  contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                  modifier = Modifier.testTag("create_album_button"),
+                ) {
+                  Icon(Icons.Filled.Add, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(16.dp))
+                  Spacer(modifier = Modifier.width(4.dp))
+                  Text("Album Baru", color = tokens.primaryTerracotta)
+                }
+              }
+              Spacer(modifier = Modifier.height(8.dp))
+
+              if (filteredAlbums.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                  EvoriaCard {
+                    Icon(Icons.Filled.Collections, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(34.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("Belum ada album tersimpan", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+                    Text(
+                      "Kelompokkan foto perjalanan, hari spesial, atau momen berdua ke dalam album tersendiri.",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = tokens.mutedText,
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                      onClick = { showAlbumDialog = true },
+                      shape = RoundedCornerShape(50),
+                      colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
+                    ) {
+                      Text("Buat Album Pertama")
+                    }
+                  }
+                }
+              } else {
+                LazyVerticalGrid(
+                  columns = GridCells.Fixed(2),
+                  modifier = Modifier.weight(1f).testTag("album_page_grid"),
+                  contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 36.dp),
+                  horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                  items(
+                    items = filteredAlbums,
+                    key = { it.id },
+                    contentType = { "album_grid_card" },
+                  ) { album ->
+                    val count = albumCounts[album.id] ?: 0
+                    Surface(
+                      shape = RoundedCornerShape(20.dp),
+                      color = tokens.elevatedCard,
+                      border = BorderStroke(1.dp, tokens.outlineSoft.copy(alpha = 0.55f)),
+                      modifier =
+                        Modifier
+                          .fillMaxWidth()
+                          .clip(RoundedCornerShape(20.dp))
+                          .clickable { onOpenAlbum(album.id) }
+                          .testTag("album_card_${album.id}"),
+                    ) {
+                      Column(modifier = Modifier.padding(10.dp)) {
+                        Box(
+                          modifier =
+                            Modifier
+                              .fillMaxWidth()
+                              .aspectRatio(1.15f)
+                              .clip(RoundedCornerShape(14.dp))
+                              .background(tokens.accentPeach.copy(alpha = 0.24f)),
+                          contentAlignment = Alignment.Center,
+                        ) {
+                          if (album.coverUri != null) {
+                            val coverReq = rememberThumbnailRequest(album.coverUri, sizePx = 320)
+                            AsyncImage(
+                              model = coverReq,
+                              contentDescription = album.title,
+                              contentScale = ContentScale.Crop,
+                              modifier = Modifier.fillMaxSize(),
+                            )
+                          } else {
+                            Icon(Icons.Filled.Collections, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(34.dp))
+                          }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(album.title, style = MaterialTheme.typography.titleSmall, color = tokens.inkText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                          text = "$count item • ${if (album.visibility == "shared") "Bersama" else "Pribadi"}",
+                          style = MaterialTheme.typography.labelSmall,
+                          color = tokens.mutedText,
+                          maxLines = 1,
+                        )
+                        if (!album.soundtrackTitle.isNullOrBlank()) {
+                          Spacer(modifier = Modifier.height(4.dp))
+                          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(Icons.Filled.MusicNote, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(12.dp))
+                            Text(album.soundtrackTitle, style = MaterialTheme.typography.labelSmall, color = tokens.primaryTerracotta, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          KenanganSubPage.GALERI -> {
+            Column(modifier = Modifier.fillMaxSize()) {
+              LazyRow(
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                val galFilters = listOf(
+                  "all" to "Semua",
+                  "photo" to "Foto",
+                  "video" to "Video",
+                  "favorite" to "Favorit",
+                  "shared" to "Bersama",
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                items(galFilters) { (key, label) ->
+                  FilterChip(
+                    selected = filterMode == key,
+                    onClick = { filterMode = key },
+                    label = { Text(label) },
+                  )
+                }
               }
-              Text(mem.title, style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
-              if (mem.caption.isNotBlank()) {
-                Text(mem.caption, style = MaterialTheme.typography.bodySmall, color = tokens.mutedText, maxLines = 2)
+
+              if (galleryMemories.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                  EvoriaCard {
+                    Icon(Icons.Filled.PhotoLibrary, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(34.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("Galeri masih kosong", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+                    Text(
+                      "Impor foto atau video dari perangkat melalui tombol + di kanan bawah.",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = tokens.mutedText,
+                    )
+                  }
+                }
+              } else {
+                val groupedSections = remember(galleryMemories) { groupMemoriesByGalleryDay(galleryMemories) }
+                val flatGalleryIds = remember(galleryMemories) { galleryMemories.map { it.id } }
+                var dragAnchorId by remember { mutableStateOf<String?>(null) }
+                var dragBaseSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+                LazyVerticalGrid(
+                  columns = GridCells.Fixed(4),
+                  modifier =
+                    Modifier
+                      .weight(1f)
+                      .onGloballyPositioned { gridBoundsRoot = it.boundsInRoot() }
+                      .pointerInput(flatGalleryIds) {
+                        detectDragGesturesAfterLongPress(
+                          onDragStart = { localStart ->
+                            val hitId = findMemoryIdAtRootPoint(localStart + gridBoundsRoot.topLeft, tileBounds)
+                            if (hitId != null) {
+                              multiSelectMode = true
+                              dragAnchorId = hitId
+                              dragBaseSelection = selectedIds
+                              selectedIds = dragBaseSelection + hitId
+                            }
+                          },
+                          onDrag = { change, _ ->
+                            change.consume()
+                            val anchor = dragAnchorId ?: return@detectDragGesturesAfterLongPress
+                            val hovered = findMemoryIdAtRootPoint(change.position + gridBoundsRoot.topLeft, tileBounds)
+                            if (hovered != null) {
+                              selectedIds = computeRangeSelection(flatGalleryIds, anchor, hovered, dragBaseSelection)
+                            }
+                          },
+                          onDragEnd = { dragAnchorId = null },
+                          onDragCancel = { dragAnchorId = null },
+                        )
+                      }
+                      .testTag("galeri_grid"),
+                  contentPadding = PaddingValues(top = 2.dp, bottom = 36.dp),
+                  horizontalArrangement = Arrangement.spacedBy(2.dp),
+                  verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                  groupedSections.forEach { section ->
+                    item(
+                      key = "hdr_${section.dayKey}",
+                      span = { GridItemSpan(maxLineSpan) },
+                      contentType = "gallery_header",
+                    ) {
+                      Row(
+                        modifier =
+                          Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                      ) {
+                        Text(
+                          text = section.dayKey,
+                          style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                          color = tokens.inkText,
+                        )
+                        if (section.locationSummary.isNotBlank()) {
+                          Text(
+                            text = section.locationSummary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = tokens.mutedText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                        }
+                      }
+                    }
+                    items(
+                      items = section.items,
+                      key = { it.id },
+                      contentType = { "gallery_tile" },
+                    ) { mem ->
+                      val isSelected = mem.id in selectedIds
+                      GalleryMediaTile(
+                        memory = mem,
+                        isSelected = isSelected,
+                        multiSelectMode = multiSelectMode,
+                        onClick = {
+                          if (multiSelectMode) {
+                            selectedIds = if (isSelected) selectedIds - mem.id else selectedIds + mem.id
+                          } else {
+                            onOpenMemory(mem.id)
+                          }
+                        },
+                        onLongClick = {
+                          multiSelectMode = true
+                          selectedIds = selectedIds + mem.id
+                        },
+                        onToggleFavorite = { onToggleFavorite(mem) },
+                        modifier = Modifier.onGloballyPositioned { coords -> tileBounds[mem.id] = coords.boundsInRoot() },
+                      )
+                    }
+                  }
+                }
               }
             }
           }
@@ -771,11 +1216,10 @@ fun KenanganScreen(
       }
     }
 
-    // Scrim backdrop when Speed-Dial FAB Menu is open
     AnimatedVisibility(
       visible = fabMenuExpanded,
-      enter = fadeIn(),
-      exit = fadeOut(),
+      enter = fadeIn(tween(180)),
+      exit = fadeOut(tween(150)),
     ) {
       Box(
         modifier =
@@ -789,7 +1233,6 @@ fun KenanganScreen(
       )
     }
 
-    // Expandable 3-function + FAB menu
     Column(
       horizontalAlignment = Alignment.End,
       verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -797,13 +1240,27 @@ fun KenanganScreen(
     ) {
       AnimatedVisibility(
         visible = fabMenuExpanded,
-        enter = fadeIn() + scaleIn(initialScale = 0.85f),
-        exit = fadeOut() + scaleOut(targetScale = 0.85f),
+        enter =
+          fadeIn(tween(180)) +
+            scaleIn(
+              initialScale = 0.72f,
+              animationSpec = spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow),
+            ),
+        exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.78f),
       ) {
         Column(
           horizontalAlignment = Alignment.End,
           verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+          KenanganSpeedDialOption(
+            label = "Gabung Album Jadi Kenangan",
+            icon = Icons.Filled.AutoStories,
+            testTag = "fab_action_create_kenangan",
+            onClick = {
+              fabMenuExpanded = false
+              showCreateKenanganDialog = true
+            },
+          )
           KenanganSpeedDialOption(
             label = "Buat Album Baru",
             icon = Icons.Filled.Collections,
@@ -814,18 +1271,18 @@ fun KenanganScreen(
             },
           )
           KenanganSpeedDialOption(
-            label = "Impor Foto dari Galeri",
+            label = "Impor Foto & Video",
             icon = Icons.Filled.PhotoLibrary,
             testTag = "fab_action_import_gallery",
             onClick = {
               fabMenuExpanded = false
               galleryDirectPicker.launch(
-                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
               )
             },
           )
           KenanganSpeedDialOption(
-            label = "Buat Kenangan",
+            label = "Tambah Foto / Cerita",
             icon = Icons.Filled.Create,
             isPrimary = true,
             testTag = "fab_action_create_memory",
@@ -837,24 +1294,111 @@ fun KenanganScreen(
         }
       }
 
-      val iconRotation by animateFloatAsState(
-        targetValue = if (fabMenuExpanded) 45f else 0f,
+      val wheelRotation by animateFloatAsState(
+        targetValue = if (fabMenuExpanded) 315f else 0f,
+        animationSpec = spring(dampingRatio = 0.62f, stiffness = 240f),
         label = "kenangan_fab_rotate",
+      )
+      val wheelScale by animateFloatAsState(
+        targetValue = if (fabMenuExpanded) 1.06f else 1f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 280f),
+        label = "kenangan_fab_scale",
       )
       FloatingActionButton(
         onClick = { fabMenuExpanded = !fabMenuExpanded },
         containerColor = tokens.primaryTerracotta,
         contentColor = Color.White,
         shape = CircleShape,
-        modifier = Modifier.testTag("kenangan_fab_add"),
+        modifier =
+          Modifier
+            .graphicsLayer {
+              scaleX = wheelScale
+              scaleY = wheelScale
+            }
+            .testTag("kenangan_fab_add"),
       ) {
-        Icon(
-          Icons.Filled.Add,
-          contentDescription = if (fabMenuExpanded) "Tutup menu tambah" else "Menu tambah kenangan",
-          modifier = Modifier.rotate(iconRotation),
-        )
+        Box(
+          modifier =
+            Modifier
+              .size(48.dp)
+              .graphicsLayer { rotationZ = wheelRotation },
+          contentAlignment = Alignment.Center,
+        ) {
+          Canvas(modifier = Modifier.fillMaxSize()) {
+            val r = size.minDimension * 0.41f
+            val inner = size.minDimension * 0.25f
+            val c = Offset(size.width / 2f, size.height / 2f)
+            val spokeColor = Color.White.copy(alpha = 0.26f)
+            for (i in 0 until 8) {
+              val rad = Math.toRadians(i * 45.0)
+              val sx = c.x + (inner * cos(rad)).toFloat()
+              val sy = c.y + (inner * sin(rad)).toFloat()
+              val ex = c.x + (r * cos(rad)).toFloat()
+              val ey = c.y + (r * sin(rad)).toFloat()
+              drawLine(
+                color = spokeColor,
+                start = Offset(sx, sy),
+                end = Offset(ex, ey),
+                strokeWidth = 1.6.dp.toPx(),
+                cap = StrokeCap.Round,
+              )
+            }
+          }
+          Icon(
+            Icons.Filled.Add,
+            contentDescription = if (fabMenuExpanded) "Tutup menu tambah" else "Menu tambah kenangan",
+          )
+        }
       }
     }
+  }
+
+  if (confirmBatchDelete && selectedIds.isNotEmpty()) {
+    val deleteTargets = memories.filter { it.id in selectedIds }
+    AlertDialog(
+      onDismissRequest = { confirmBatchDelete = false },
+      title = { Text("Hapus ${deleteTargets.size} Item Terpilih?") },
+      text = {
+        Text("Foto, video, atau cerita yang dipilih akan dihapus permanen dari perangkat ini.")
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            confirmBatchDelete = false
+            onDeleteMemories(deleteTargets)
+            selectedIds = emptySet()
+            multiSelectMode = false
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = tokens.roseError),
+          modifier = Modifier.testTag("kenangan_confirm_batch_delete"),
+        ) {
+          Text("Hapus")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { confirmBatchDelete = false }) { Text("Batal") }
+      },
+    )
+  }
+
+  kenanganPendingDelete?.let { col ->
+    AlertDialog(
+      onDismissRequest = { kenanganPendingDelete = null },
+      title = { Text("Hapus Kompilasi Kenangan?") },
+      text = { Text("Kompilasi \"${col.title}\" akan dihapus. Album dan foto asli di dalamnya tetap aman.") },
+      confirmButton = {
+        Button(
+          onClick = {
+            onDeleteKenangan(col.id)
+            kenanganPendingDelete = null
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = tokens.roseError),
+        ) { Text("Hapus") }
+      },
+      dismissButton = {
+        TextButton(onClick = { kenanganPendingDelete = null }) { Text("Batal") }
+      },
+    )
   }
 
   if (showAlbumDialog) {
@@ -866,6 +1410,200 @@ fun KenanganScreen(
         showAlbumDialog = false
       },
     )
+  }
+
+  if (showCreateKenanganDialog) {
+    CreateKenanganDialog(
+      albums = albums,
+      albumCounts = albumCounts,
+      onDismiss = { showCreateKenanganDialog = false },
+      onCreateAlbumFirst = {
+        showCreateKenanganDialog = false
+        showAlbumDialog = true
+      },
+      onSave = { title, desc, selectedAlbumIds, visibility ->
+        onCreateKenangan(title, desc, selectedAlbumIds, visibility)
+        showCreateKenanganDialog = false
+      },
+    )
+  }
+}
+
+@Composable
+private fun CreateKenanganDialog(
+  albums: List<LocalAlbumEntity>,
+  albumCounts: Map<String, Int>,
+  onDismiss: () -> Unit,
+  onCreateAlbumFirst: () -> Unit,
+  onSave: (title: String, desc: String, albumIds: List<String>, visibility: String) -> Unit,
+) {
+  val tokens = LocalEvoriaTokens.current
+  var title by remember { mutableStateOf("") }
+  var description by remember { mutableStateOf("") }
+  var visibility by remember { mutableStateOf("private") }
+  var chosenAlbumIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+  EvoriaSymmetricDialogShell(
+    title = "Buat Kenangan dari Album",
+    subtitle = "Gabungkan beberapa album pilihan menjadi satu cerita kenangan",
+    icon = Icons.Filled.AutoStories,
+    onDismiss = onDismiss,
+    confirmLabel = if (albums.isEmpty()) "Buat Album" else "Gabungkan",
+    confirmEnabled = albums.isEmpty() || chosenAlbumIds.isNotEmpty(),
+    confirmTestTag = "confirm_create_kenangan_button",
+    onConfirm = {
+      if (albums.isEmpty()) {
+        onCreateAlbumFirst()
+      } else {
+        onSave(title, description, chosenAlbumIds.toList(), visibility)
+      }
+    },
+  ) {
+    if (albums.isEmpty()) {
+      Text(
+        "Belum ada album yang dapat digabungkan. Buat minimal satu album terlebih dahulu.",
+        style = MaterialTheme.typography.bodySmall,
+        color = tokens.mutedText,
+      )
+    } else {
+      EvoriaFormTextField(
+        value = title,
+        onValueChange = { title = it },
+        label = "Judul Kenangan",
+        placeholder = "Misal: Tahun Pertama Kita",
+        singleLine = true,
+        modifier = Modifier.testTag("create_kenangan_title_input"),
+      )
+      EvoriaFormTextField(
+        value = description,
+        onValueChange = { description = it },
+        label = "Catatan Singkat (Opsional)",
+        singleLine = false,
+        minLines = 2,
+        maxLines = 3,
+      )
+      Text("Privasi Kompilasi", style = MaterialTheme.typography.labelLarge, color = tokens.primaryTerracotta)
+      EvoriaSymmetricPrivacyRow(visibility = visibility, onVisibilityChange = { visibility = it })
+      Text(
+        "Pilih Album untuk Digabung (${chosenAlbumIds.size} terpilih):",
+        style = MaterialTheme.typography.labelLarge,
+        color = tokens.primaryTerracotta,
+      )
+      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        albums.forEach { alb ->
+          val checked = alb.id in chosenAlbumIds
+          val itemCount = albumCounts[alb.id] ?: 0
+          Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = if (checked) tokens.primaryTerracotta.copy(alpha = 0.14f) else tokens.secondarySurface.copy(alpha = 0.55f),
+            border = BorderStroke(1.dp, if (checked) tokens.primaryTerracotta else tokens.outlineSoft.copy(alpha = 0.6f)),
+            modifier =
+              Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .clickable {
+                  chosenAlbumIds = if (checked) chosenAlbumIds - alb.id else chosenAlbumIds + alb.id
+                }
+                .testTag("kenangan_album_check_${alb.id}"),
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+              Checkbox(
+                checked = checked,
+                onCheckedChange = {
+                  chosenAlbumIds = if (checked) chosenAlbumIds - alb.id else chosenAlbumIds + alb.id
+                },
+              )
+              Column(modifier = Modifier.weight(1f)) {
+                Text(alb.title, style = MaterialTheme.typography.titleSmall, color = tokens.inkText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("$itemCount item", style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun KenanganDetailScreen(
+  collection: KenanganCollectionEntity,
+  albums: List<LocalAlbumEntity>,
+  memories: List<LocalMemoryEntity>,
+  onBack: () -> Unit,
+  onOpenAlbum: (String) -> Unit,
+  onOpenMemory: (String) -> Unit,
+  onDeleteKenangan: () -> Unit,
+) {
+  BackHandler(onBack = onBack)
+  val tokens = LocalEvoriaTokens.current
+  val includedIds = remember(collection.albumIdsCsv) { collection.albumIdList().toSet() }
+  val includedAlbums = remember(albums, includedIds) { albums.filter { it.id in includedIds } }
+  val mergedMemories =
+    remember(memories, includedIds) {
+      memories.filter { it.albumId in includedIds }.sortedByDescending { it.memoryDateMillis }
+    }
+
+  EvoriaSanctuaryBackdrop {
+    Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+      EvoriaTopBar(
+        title = collection.title,
+        subtitle = "${includedAlbums.size} album • ${mergedMemories.size} kenangan",
+        onBack = onBack,
+        trailingAction = {
+          IconButton(onClick = onDeleteKenangan) {
+            Icon(Icons.Filled.Delete, contentDescription = "Hapus kompilasi", tint = tokens.roseError)
+          }
+        },
+      )
+
+      LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 104.dp),
+        modifier = Modifier.weight(1f).testTag("kenangan_detail_grid"),
+        contentPadding = PaddingValues(top = 4.dp, bottom = 36.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+      ) {
+        item(span = { GridItemSpan(maxLineSpan) }, contentType = "kenangan_detail_header") {
+          EvoriaCard(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+            if (collection.description.isNotBlank()) {
+              Text(collection.description, style = MaterialTheme.typography.bodyMedium, color = tokens.inkText)
+              Spacer(modifier = Modifier.height(8.dp))
+            }
+            Text("Album Tergabung:", style = MaterialTheme.typography.labelMedium, color = tokens.primaryTerracotta)
+            Spacer(modifier = Modifier.height(6.dp))
+            FlowRow(
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+              verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              includedAlbums.forEach { alb ->
+                FilterChip(
+                  selected = true,
+                  onClick = { onOpenAlbum(alb.id) },
+                  leadingIcon = { Icon(Icons.Filled.Collections, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                  label = { Text(alb.title) },
+                )
+              }
+            }
+          }
+        }
+        items(
+          items = mergedMemories,
+          key = { it.id },
+          contentType = { "gallery_tile" },
+        ) { mem ->
+          GalleryMediaTile(
+            memory = mem,
+            onClick = { onOpenMemory(mem.id) },
+          )
+        }
+      }
+    }
   }
 }
 
@@ -995,16 +1733,33 @@ fun AlbumDetailScreen(
 ) {
   BackHandler(onBack = onBack)
   val tokens = LocalEvoriaTokens.current
+  val context = LocalContext.current
   var showEdit by remember { mutableStateOf(false) }
+  var multiSelectMode by remember { mutableStateOf(false) }
+  var selectedIds by remember { mutableStateOf(setOf<String>()) }
+  val tileBounds = remember { mutableMapOf<String, Rect>() }
+  var gridBoundsRoot by remember { mutableStateOf(Rect.Zero) }
+  var dragAnchorId by remember { mutableStateOf<String?>(null) }
+  var dragBaseSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
 
   EvoriaSanctuaryBackdrop {
     Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
       EvoriaTopBar(
         title = album.title,
-        subtitle = "${memories.size} kenangan • ${if (album.visibility == "shared") "Bersama" else "Pribadi"}",
+        subtitle = "${memories.size} item • ${if (album.visibility == "shared") "Bersama" else "Pribadi"}",
         onBack = onBack,
         trailingAction = {
           Row {
+            IconButton(onClick = {
+              multiSelectMode = !multiSelectMode
+              if (!multiSelectMode) selectedIds = emptySet()
+            }) {
+              Icon(
+                Icons.Filled.Checklist,
+                contentDescription = "Pilih banyak",
+                tint = if (multiSelectMode) tokens.primaryTerracotta else tokens.inkText,
+              )
+            }
             IconButton(onClick = { showEdit = true }) {
               Icon(Icons.Filled.Edit, contentDescription = "Ubah album", tint = tokens.inkText)
             }
@@ -1014,10 +1769,64 @@ fun AlbumDetailScreen(
           }
         },
       )
+      AnimatedVisibility(visible = multiSelectMode) {
+        Surface(
+          color = tokens.elevatedCard,
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+          shape = RoundedCornerShape(14.dp),
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Text("${selectedIds.size} dipilih", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+              TextButton(
+                enabled = selectedIds.isNotEmpty(),
+                onClick = {
+                  MediaStorageHelper.shareMemoriesViaAllApps(context, memories.filter { it.id in selectedIds })
+                },
+              ) { Text("Bagikan", color = tokens.primaryTerracotta) }
+              TextButton(onClick = {
+                selectedIds = emptySet()
+                multiSelectMode = false
+              }) { Text("Selesai") }
+            }
+          }
+        }
+      }
       val sortedAlbumMemories = remember(memories) { memories.sortedByDescending { it.memoryDateMillis } }
+      val flatAlbumIds = remember(sortedAlbumMemories) { sortedAlbumMemories.map { it.id } }
       LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 104.dp),
-        modifier = Modifier.weight(1f),
+        modifier =
+          Modifier
+            .weight(1f)
+            .onGloballyPositioned { gridBoundsRoot = it.boundsInRoot() }
+            .pointerInput(flatAlbumIds) {
+              detectDragGesturesAfterLongPress(
+                onDragStart = { localStart ->
+                  val hitId = findMemoryIdAtRootPoint(localStart + gridBoundsRoot.topLeft, tileBounds)
+                  if (hitId != null) {
+                    multiSelectMode = true
+                    dragAnchorId = hitId
+                    dragBaseSelection = selectedIds
+                    selectedIds = dragBaseSelection + hitId
+                  }
+                },
+                onDrag = { change, _ ->
+                  change.consume()
+                  val anchor = dragAnchorId ?: return@detectDragGesturesAfterLongPress
+                  val hovered = findMemoryIdAtRootPoint(change.position + gridBoundsRoot.topLeft, tileBounds)
+                  if (hovered != null) {
+                    selectedIds = computeRangeSelection(flatAlbumIds, anchor, hovered, dragBaseSelection)
+                  }
+                },
+                onDragEnd = { dragAnchorId = null },
+                onDragCancel = { dragAnchorId = null },
+              )
+            },
         contentPadding = PaddingValues(top = 4.dp, bottom = 36.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1047,9 +1856,23 @@ fun AlbumDetailScreen(
           key = { it.id },
           contentType = { "gallery_tile" },
         ) { mem ->
+          val selected = mem.id in selectedIds
           GalleryMediaTile(
             memory = mem,
-            onClick = { onOpenMemory(mem.id) },
+            isSelected = selected,
+            multiSelectMode = multiSelectMode,
+            onClick = {
+              if (multiSelectMode) {
+                selectedIds = if (selected) selectedIds - mem.id else selectedIds + mem.id
+              } else {
+                onOpenMemory(mem.id)
+              }
+            },
+            onLongClick = {
+              multiSelectMode = true
+              selectedIds = selectedIds + mem.id
+            },
+            modifier = Modifier.onGloballyPositioned { coords -> tileBounds[mem.id] = coords.boundsInRoot() },
           )
         }
       }
@@ -1069,8 +1892,203 @@ fun AlbumDetailScreen(
 }
 
 @Composable
+fun GooglePhotosActionBottomBar(
+  isFavorite: Boolean,
+  onToggleFavorite: () -> Unit,
+  onEdit: () -> Unit,
+  onShowRincian: () -> Unit,
+  onShare: () -> Unit,
+  onDelete: () -> Unit,
+  darkOverlayMode: Boolean = false,
+  modifier: Modifier = Modifier,
+) {
+  val tokens = LocalEvoriaTokens.current
+  val iconTint = if (darkOverlayMode || tokens.isDark) Color.White else tokens.inkText
+  val pillSurface = if (darkOverlayMode || tokens.isDark) Color(0xFF333136) else tokens.secondarySurface
+  val rincianCircle = if (darkOverlayMode || tokens.isDark) Color(0xFF423F46) else tokens.primaryTerracotta.copy(alpha = 0.16f)
+
+  Column(
+    modifier = modifier.fillMaxWidth().padding(bottom = 10.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+  ) {
+    // Floating "Rincian" tooltip pill directly above the circular (i) button
+    Surface(
+      shape = RoundedCornerShape(50),
+      color = pillSurface,
+      shadowElevation = 4.dp,
+      modifier = Modifier.clickable(onClick = onShowRincian),
+    ) {
+      Text(
+        text = "Rincian",
+        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium),
+        color = iconTint,
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 7.dp),
+      )
+    }
+    Spacer(modifier = Modifier.height(6.dp))
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+      horizontalArrangement = Arrangement.SpaceEvenly,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      IconButton(onClick = onToggleFavorite, modifier = Modifier.minimumInteractiveComponentSize().testTag("memory_bar_favorite")) {
+        Icon(
+          imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+          contentDescription = "Favorit",
+          tint = if (isFavorite) Color(0xFFFF6B6B) else iconTint,
+        )
+      }
+      IconButton(onClick = onEdit, modifier = Modifier.minimumInteractiveComponentSize().testTag("memory_bar_edit")) {
+        Icon(Icons.Filled.Edit, contentDescription = "Ubah", tint = iconTint)
+      }
+      Surface(
+        shape = CircleShape,
+        color = rincianCircle,
+        modifier =
+          Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onShowRincian)
+            .testTag("memory_rincian_button"),
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.Filled.Info,
+            contentDescription = "Rincian foto & video",
+            tint = iconTint,
+            modifier = Modifier.size(24.dp),
+          )
+        }
+      }
+      IconButton(onClick = onShare, modifier = Modifier.minimumInteractiveComponentSize().testTag("memory_bar_share")) {
+        Icon(Icons.Filled.Share, contentDescription = "Bagikan", tint = iconTint)
+      }
+      IconButton(onClick = onDelete, modifier = Modifier.minimumInteractiveComponentSize().testTag("memory_bar_delete")) {
+        Icon(Icons.Filled.Delete, contentDescription = "Hapus", tint = iconTint)
+      }
+    }
+  }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MemoryRincianBottomSheet(
+  memory: LocalMemoryEntity,
+  albumTitle: String?,
+  onDismiss: () -> Unit,
+) {
+  val context = LocalContext.current
+  val tokens = LocalEvoriaTokens.current
+  val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  val detailedInfo by produceState<MediaStorageHelper.MediaDetailedInfo?>(
+    initialValue = null,
+    key1 = memory.id,
+    key2 = memory.mediaUri,
+    key3 = memory.memoryDateMillis,
+  ) {
+    value = withContext(Dispatchers.IO) { MediaStorageHelper.inspectMediaDetails(context, memory) }
+  }
+
+  ModalBottomSheet(
+    onDismissRequest = onDismiss,
+    sheetState = sheetState,
+    containerColor = tokens.elevatedCard,
+    modifier = Modifier.testTag("memory_rincian_sheet"),
+  ) {
+    Column(
+      modifier =
+        Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .padding(horizontal = 22.dp, vertical = 8.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      Text("Rincian", style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold), color = tokens.inkText)
+      val info = detailedInfo
+      if (info == null) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+          CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = tokens.primaryTerracotta)
+          Text("Membaca rincian berkas...", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
+        }
+      } else {
+        RincianDetailRow(
+          icon = Icons.Filled.CalendarToday,
+          title = info.fullDateFormatted,
+          subtitle = "Hari: ${info.dayOfWeek} • Tanggal: ${info.dayOfMonth} • Bulan: ${info.monthName} • Tahun: ${info.year}",
+        )
+        RincianDetailRow(
+          icon = Icons.Filled.Schedule,
+          title = "Waktu: ${info.timeFormatted}",
+          subtitle = "Dicatat pada zona waktu perangkat",
+        )
+        RincianDetailRow(
+          icon = Icons.Filled.PhotoSizeSelectLarge,
+          title = "${info.mediaTypeLabel} • ${info.fileName}",
+          subtitle =
+            buildString {
+              append("Ukuran: ${info.sizeFormatted}")
+              if (info.resolutionLabel != "Tidak tersedia") append(" • ${info.resolutionLabel}")
+              if (!info.durationLabel.isNullOrBlank()) append(" • Durasi: ${info.durationLabel}")
+            },
+        )
+        RincianDetailRow(
+          icon = Icons.Filled.Folder,
+          title = "Lokasi Penyimpanan",
+          subtitle = info.storageLocationLabel,
+        )
+        if (!albumTitle.isNullOrBlank()) {
+          RincianDetailRow(
+            icon = Icons.Filled.Collections,
+            title = "Album: $albumTitle",
+            subtitle = if (memory.visibility == "shared") "Dibagikan ke pasangan" else "Penyimpanan pribadi",
+          )
+        }
+        if (memory.locationName.isNotBlank()) {
+          RincianDetailRow(
+            icon = Icons.Filled.LocationOn,
+            title = "Lokasi Momen",
+            subtitle = memory.locationName,
+          )
+        }
+      }
+      Spacer(modifier = Modifier.height(16.dp))
+    }
+  }
+}
+
+@Composable
+private fun RincianDetailRow(
+  icon: ImageVector,
+  title: String,
+  subtitle: String,
+) {
+  val tokens = LocalEvoriaTokens.current
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(14.dp),
+    verticalAlignment = Alignment.Top,
+  ) {
+    Surface(
+      shape = CircleShape,
+      color = tokens.primaryTerracotta.copy(alpha = 0.14f),
+      modifier = Modifier.size(36.dp),
+    ) {
+      Box(contentAlignment = Alignment.Center) {
+        Icon(icon, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
+      }
+    }
+    Column(modifier = Modifier.weight(1f)) {
+      Text(title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold), color = tokens.inkText)
+      Spacer(modifier = Modifier.height(2.dp))
+      Text(subtitle, style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
+    }
+  }
+}
+
+@Composable
 fun MemoryDetailScreen(
   memory: LocalMemoryEntity,
+  albumTitle: String? = null,
   onBack: () -> Unit,
   onToggleFavorite: () -> Unit,
   onEdit: () -> Unit,
@@ -1080,8 +2098,10 @@ fun MemoryDetailScreen(
   onOpenFullscreenVideo: () -> Unit,
 ) {
   BackHandler(onBack = onBack)
+  val context = LocalContext.current
   val tokens = LocalEvoriaTokens.current
   var confirmDelete by remember { mutableStateOf(false) }
+  var showRincianSheet by remember { mutableStateOf(false) }
 
   EvoriaSanctuaryBackdrop {
     Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
@@ -1090,20 +2110,8 @@ fun MemoryDetailScreen(
         subtitle = formatIndoDate(memory.memoryDateMillis),
         onBack = onBack,
         trailingAction = {
-          Row {
-            IconButton(onClick = onToggleFavorite) {
-              Icon(
-                imageVector = if (memory.isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                contentDescription = "Favorit",
-                tint = if (memory.isFavorite) tokens.primaryTerracotta else tokens.inkText,
-              )
-            }
-            IconButton(onClick = onEdit) {
-              Icon(Icons.Filled.Edit, contentDescription = "Ubah kenangan", tint = tokens.inkText)
-            }
-            IconButton(onClick = { confirmDelete = true }) {
-              Icon(Icons.Filled.Delete, contentDescription = "Hapus kenangan", tint = tokens.roseError)
-            }
+          IconButton(onClick = { showRincianSheet = true }) {
+            Icon(Icons.Filled.Info, contentDescription = "Rincian", tint = tokens.inkText)
           }
         },
       )
@@ -1123,8 +2131,9 @@ fun MemoryDetailScreen(
                   if (memory.mediaType == "video") onOpenFullscreenVideo() else onOpenFullscreenPhoto()
                 }
           ) {
+            val detailHeroReq = rememberThumbnailRequest(memory.mediaUri, sizePx = 960)
             AsyncImage(
-              model = memory.mediaUri,
+              model = detailHeroReq,
               contentDescription = memory.title,
               modifier = Modifier.fillMaxSize(),
               contentScale = ContentScale.Crop,
@@ -1182,7 +2191,24 @@ fun MemoryDetailScreen(
           Text("Kirim via EVORIA Share ke Pasangan")
         }
       }
+
+      GooglePhotosActionBottomBar(
+        isFavorite = memory.isFavorite,
+        onToggleFavorite = onToggleFavorite,
+        onEdit = onEdit,
+        onShowRincian = { showRincianSheet = true },
+        onShare = { MediaStorageHelper.shareMemoriesViaAllApps(context, listOf(memory)) },
+        onDelete = { confirmDelete = true },
+      )
     }
+  }
+
+  if (showRincianSheet) {
+    MemoryRincianBottomSheet(
+      memory = memory,
+      albumTitle = albumTitle,
+      onDismiss = { showRincianSheet = false },
+    )
   }
 
   if (confirmDelete) {
@@ -1210,6 +2236,10 @@ fun MemoryDetailScreen(
 fun AddOrEditMemoryScreen(
   existing: LocalMemoryEntity?,
   albums: List<LocalAlbumEntity>,
+  aiDraftState: AiMemoryDraftUiState = AiMemoryDraftUiState.Idle,
+  aiConsentGranted: Boolean = false,
+  onGenerateAiDraft: (photoUri: Uri?, seedTitle: String, location: String) -> Unit = { _, _, _ -> },
+  onClearAiDraft: () -> Unit = {},
   onBack: () -> Unit,
   onSaveMediaMemories: (uris: List<Uri>, title: String, caption: String, story: String, location: String, albumId: String?, visibility: String, tagsCsv: String) -> Unit,
   onSaveStoryOnly: (existing: LocalMemoryEntity?, title: String, caption: String, story: String, location: String, albumId: String?, visibility: String, tagsCsv: String) -> Unit,
@@ -1229,6 +2259,16 @@ fun AddOrEditMemoryScreen(
     rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
       if (uris.isNotEmpty()) pickedUris = uris
     }
+
+  LaunchedEffect(aiDraftState) {
+    if (aiDraftState is AiMemoryDraftUiState.Success) {
+      val draft = aiDraftState.draft
+      if (title.isBlank()) title = draft.title
+      if (caption.isBlank()) caption = draft.caption
+      if (story.isBlank()) story = draft.story
+      if (tagsCsv.isBlank()) tagsCsv = draft.tagsCsv
+    }
+  }
 
   EvoriaSanctuaryBackdrop {
     Column(
@@ -1273,9 +2313,10 @@ fun AddOrEditMemoryScreen(
             if (pickedUris.isNotEmpty()) {
               Spacer(modifier = Modifier.height(10.dp))
               LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(pickedUris) { uri ->
+                items(pickedUris, key = { it.toString() }) { uri ->
+                  val thumbReq = rememberThumbnailRequest(uri, sizePx = 180)
                   AsyncImage(
-                    model = uri,
+                    model = thumbReq,
                     contentDescription = "Media terpilih",
                     modifier = Modifier.size(84.dp).clip(RoundedCornerShape(8.dp)),
                     contentScale = ContentScale.Crop,
@@ -1287,7 +2328,67 @@ fun AddOrEditMemoryScreen(
         }
 
         EvoriaCard(elevated = true) {
-          Text("Detail & Cerita Momen", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text("Detail & Cerita Momen", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
+            TextButton(
+              onClick = {
+                val targetUri = pickedUris.firstOrNull() ?: existing?.mediaUri?.let { Uri.parse(it) }
+                onGenerateAiDraft(targetUri, title, location)
+              },
+              enabled = aiDraftState !is AiMemoryDraftUiState.Loading,
+              modifier = Modifier.minimumInteractiveComponentSize().testTag("memory_ai_draft_button"),
+            ) {
+              if (aiDraftState is AiMemoryDraftUiState.Loading) {
+                CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp, color = tokens.primaryTerracotta)
+              } else {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp), tint = tokens.primaryTerracotta)
+              }
+              Spacer(modifier = Modifier.width(6.dp))
+              Text(
+                text = if (aiDraftState is AiMemoryDraftUiState.Loading) "Merangkai..." else "Rangkai AI",
+                color = tokens.primaryTerracotta,
+              )
+            }
+          }
+          if (!aiConsentGranted) {
+            Text(
+              text = "Aktifkan izin Gemini AI di tab Jelajah bila ingin membuat judul & cerita otomatis dari foto.",
+              style = MaterialTheme.typography.labelSmall,
+              color = tokens.mutedText,
+            )
+          } else if (aiDraftState is AiMemoryDraftUiState.Success) {
+            Row(
+              modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                text = "Draf Gemini AI siap diterapkan ke kolom kosong.",
+                style = MaterialTheme.typography.labelSmall,
+                color = tokens.sageSuccess,
+              )
+              TextButton(onClick = {
+                val draft = aiDraftState.draft
+                title = draft.title
+                caption = draft.caption
+                story = draft.story
+                tagsCsv = draft.tagsCsv
+                onClearAiDraft()
+              }) {
+                Text("Timpa Semua", color = tokens.primaryTerracotta)
+              }
+            }
+          } else if (aiDraftState is AiMemoryDraftUiState.Error) {
+            Text(
+              text = aiDraftState.message,
+              style = MaterialTheme.typography.labelSmall,
+              color = tokens.roseError,
+            )
+          }
           Spacer(modifier = Modifier.height(10.dp))
           EvoriaFormTextField(
             value = title,
@@ -1375,35 +2476,86 @@ fun AddOrEditMemoryScreen(
 }
 
 @Composable
-fun FullscreenPhotoViewer(mediaUri: String, title: String, onBack: () -> Unit) {
+fun FullscreenPhotoViewer(
+  mediaUri: String,
+  title: String,
+  memory: LocalMemoryEntity? = null,
+  albumTitle: String? = null,
+  onToggleFavorite: (() -> Unit)? = null,
+  onEdit: (() -> Unit)? = null,
+  onDelete: (() -> Unit)? = null,
+  onBack: () -> Unit,
+) {
   BackHandler(onBack = onBack)
+  val context = LocalContext.current
+  val density = LocalDensity.current
   var scale by remember { mutableFloatStateOf(1f) }
   var offset by remember { mutableStateOf(Offset.Zero) }
+  var dismissDragY by remember { mutableFloatStateOf(0f) }
+  var showRincianSheet by remember { mutableStateOf(false) }
+
+  val dismissThresholdPx = with(density) { 140.dp.toPx() }
+  val animatedDismissY by animateFloatAsState(
+    targetValue = dismissDragY,
+    animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMedium),
+    label = "viewer_dismiss_y",
+  )
+  val bgAlpha = (1f - (abs(animatedDismissY) / (dismissThresholdPx * 2.2f))).coerceIn(0.35f, 1f)
 
   Box(
     modifier =
       Modifier
         .fillMaxSize()
-        .background(Color.Black)
+        .background(Color.Black.copy(alpha = bgAlpha))
         .windowInsetsPadding(WindowInsets.safeDrawing)
         .pointerInput(Unit) {
-          detectTransformGestures { _, pan, zoom, _ ->
-            scale = (scale * zoom).coerceIn(1f, 4f)
-            offset = if (scale > 1f) offset + pan else Offset.Zero
+          detectTapGestures(
+            onDoubleTap = {
+              if (scale > 1.05f) {
+                scale = 1f
+                offset = Offset.Zero
+              } else {
+                scale = 2.2f
+              }
+            }
+          )
+        }
+        .pointerInput(scale) {
+          if (scale <= 1.02f) {
+            detectVerticalDragGestures(
+              onVerticalDrag = { _, dragAmount ->
+                dismissDragY = (dismissDragY + dragAmount).coerceAtLeast(-dismissThresholdPx * 1.4f)
+              },
+              onDragEnd = {
+                if (abs(dismissDragY) >= dismissThresholdPx) {
+                  onBack()
+                } else {
+                  dismissDragY = 0f
+                }
+              },
+              onDragCancel = { dismissDragY = 0f },
+            )
+          } else {
+            detectTransformGestures { _, pan, zoom, _ ->
+              scale = (scale * zoom).coerceIn(1f, 4f)
+              offset = if (scale > 1f) offset + pan else Offset.Zero
+            }
           }
         }
   ) {
+    val fullscreenReq = rememberThumbnailRequest(mediaUri, sizePx = 2048)
     AsyncImage(
-      model = mediaUri,
+      model = fullscreenReq,
       contentDescription = title,
       modifier =
         Modifier
           .fillMaxSize()
           .graphicsLayer {
-            scaleX = scale
-            scaleY = scale
+            val dragScale = (1f - (abs(animatedDismissY) / (dismissThresholdPx * 4f))).coerceIn(0.84f, 1f)
+            scaleX = scale * dragScale
+            scaleY = scale * dragScale
             translationX = offset.x
-            translationY = offset.y
+            translationY = if (scale > 1.02f) offset.y else animatedDismissY
           },
       contentScale = ContentScale.Fit,
     )
@@ -1413,6 +2565,30 @@ fun FullscreenPhotoViewer(mediaUri: String, title: String, onBack: () -> Unit) {
     ) {
       Icon(Icons.Filled.Close, contentDescription = "Tutup penampil foto", tint = Color.White)
     }
+
+    if (memory != null) {
+      GooglePhotosActionBottomBar(
+        isFavorite = memory.isFavorite,
+        onToggleFavorite = { onToggleFavorite?.invoke() },
+        onEdit = { onEdit?.invoke() },
+        onShowRincian = { showRincianSheet = true },
+        onShare = { MediaStorageHelper.shareMemoriesViaAllApps(context, listOf(memory)) },
+        onDelete = {
+          onDelete?.invoke()
+          onBack()
+        },
+        darkOverlayMode = true,
+        modifier = Modifier.align(Alignment.BottomCenter),
+      )
+    }
+  }
+
+  if (showRincianSheet && memory != null) {
+    MemoryRincianBottomSheet(
+      memory = memory,
+      albumTitle = albumTitle,
+      onDismiss = { showRincianSheet = false },
+    )
   }
 }
 
@@ -1445,19 +2621,24 @@ fun FullscreenVideoViewer(mediaUri: String, onBack: () -> Unit) {
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun UploadQueueScreen(
   jobs: List<UploadJobEntity>,
+  memories: List<LocalMemoryEntity> = emptyList(),
+  albums: List<LocalAlbumEntity> = emptyList(),
   onRetry: (UploadJobEntity) -> Unit,
   onDelete: (String) -> Unit,
   onBack: () -> Unit,
 ) {
   BackHandler(onBack = onBack)
   val tokens = LocalEvoriaTokens.current
+  val memoriesById = remember(memories) { memories.associateBy { it.id } }
+  val albumsById = remember(albums) { albums.associateBy { it.id } }
 
   EvoriaSanctuaryBackdrop {
     Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-      EvoriaTopBar(title = "Antrean Unggahan", subtitle = "Pemulihan otomatis & backoff", onBack = onBack)
+      EvoriaTopBar(title = "Antrean Unggahan", subtitle = "Detail antrean, ukuran & pemulihan otomatis", onBack = onBack)
       if (jobs.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
           EvoriaCard {
@@ -1472,12 +2653,85 @@ fun UploadQueueScreen(
           verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
           items(jobs, key = { it.id }) { job ->
-            EvoriaCard {
-              Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            val mem = memoriesById[job.memoryId]
+            val targetAlbum = (job.targetAlbumId ?: mem?.albumId)?.let { albumsById[it] }
+            val mediaType = mem?.mediaType?.lowercase() ?: "photo"
+            val fileSizeLabel by produceState(initialValue = "...", key1 = job.mediaUri) {
+              value =
+                withContext(Dispatchers.IO) {
+                  val path = runCatching { Uri.parse(job.mediaUri).path }.getOrNull()
+                  val bytes = if (!path.isNullOrBlank()) File(path).length() else 0L
+                  if (bytes > 0L) MediaStorageHelper.formatBytes(bytes) else "Ukuran lokal"
+                }
+            }
+            val statusLabel =
+              when (job.status.lowercase()) {
+                "completed", "synced" -> "Selesai"
+                "processing", "uploading" -> "Memproses"
+                "failed" -> "Gagal"
+                else -> "Antre"
+              }
+            val statusColor =
+              when (job.status.lowercase()) {
+                "completed", "synced" -> tokens.sageSuccess
+                "failed" -> tokens.roseError
+                else -> tokens.primaryTerracotta
+              }
+
+            EvoriaCard(modifier = Modifier.testTag("upload_job_card_${job.id}")) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Box(
+                  modifier =
+                    Modifier
+                      .size(58.dp)
+                      .clip(RoundedCornerShape(12.dp))
+                      .background(tokens.secondarySurface),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  if (job.mediaUri.isNotBlank()) {
+                    val req = rememberThumbnailRequest(job.mediaUri, sizePx = 180)
+                    AsyncImage(
+                      model = req,
+                      contentDescription = mem?.title ?: job.caption,
+                      contentScale = ContentScale.Crop,
+                      modifier = Modifier.fillMaxSize(),
+                    )
+                  } else {
+                    Icon(
+                      imageVector = if (mediaType == "video") Icons.Filled.Videocam else Icons.Filled.Photo,
+                      contentDescription = null,
+                      tint = tokens.primaryTerracotta,
+                    )
+                  }
+                }
                 Column(modifier = Modifier.weight(1f)) {
-                  Text(job.caption.ifBlank { "Media ${job.targetVisibility}" }, style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
-                  Text("Status: ${job.status} • Percobaan: ${job.attemptCount}", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
-                  Text(formatIndoDateTime(job.updatedAtMillis), style = MaterialTheme.typography.labelSmall, color = tokens.mutedText)
+                  Text(
+                    text = mem?.title?.ifBlank { job.caption } ?: job.caption.ifBlank { "Media ${job.targetVisibility}" },
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = tokens.inkText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                  Spacer(modifier = Modifier.height(4.dp))
+                  FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                  ) {
+                    UploadDetailPill(label = statusLabel, color = statusColor)
+                    UploadDetailPill(
+                      label = when (mediaType) {
+                        "video" -> "Video"
+                        "story" -> "Cerita"
+                        else -> "Foto"
+                      },
+                      color = tokens.primaryTerracotta,
+                    )
+                    UploadDetailPill(label = fileSizeLabel, color = tokens.mutedText)
+                  }
                 }
                 Row {
                   if (job.status == "failed" || job.status == "queued") {
@@ -1490,14 +2744,44 @@ fun UploadQueueScreen(
                   }
                 }
               }
+
+              Spacer(modifier = Modifier.height(8.dp))
+              HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.45f))
+              Spacer(modifier = Modifier.height(8.dp))
+              Text(
+                text = "Album: ${targetAlbum?.title ?: "Tanpa Album"} • Privasi: ${if (job.targetVisibility == "shared") "Bersama" else "Pribadi"} • Percobaan: ${job.attemptCount}",
+                style = MaterialTheme.typography.bodySmall,
+                color = tokens.mutedText,
+              )
+              Text(
+                text = "Dibuat: ${formatIndoDateTime(job.createdAtMillis)} • Diperbarui: ${formatIndoDateTime(job.updatedAtMillis)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = tokens.mutedText,
+              )
               if (!job.lastError.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(6.dp))
-                Text(job.lastError, style = MaterialTheme.typography.bodySmall, color = tokens.roseError)
+                Text("Kendala: ${job.lastError}", style = MaterialTheme.typography.bodySmall, color = tokens.roseError)
               }
             }
           }
         }
       }
     }
+  }
+}
+
+@Composable
+private fun UploadDetailPill(label: String, color: Color) {
+  Surface(
+    shape = RoundedCornerShape(50),
+    color = color.copy(alpha = 0.14f),
+    border = BorderStroke(1.dp, color.copy(alpha = 0.45f)),
+  ) {
+    Text(
+      text = label,
+      style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+      color = color,
+      modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+    )
   }
 }

@@ -685,20 +685,22 @@ class EvoriaCloudRepository(
     }
   }
 
-  fun observeNotifications(coupleId: String): Flow<List<NotificationItemDto>> = flow {
+  fun observeSharedMusic(coupleId: String): Flow<List<SharedMusicDto>> = flow {
     val uid = requireUserId()
-    val path = "couples/$coupleId/notifications"
+    val path = "couples/$coupleId/shared_music"
     emitAll(
       db.collection("couples")
         .document(coupleId)
-        .collection("notifications")
+        .collection("shared_music")
         .whereArrayContains("memberUids", uid)
         .snapshots()
         .map { snap ->
-          snap.toObjects(
-            NotificationItemDto::class.java,
-            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE,
-          )
+          snap
+            .toObjects(
+              SharedMusicDto::class.java,
+              DocumentSnapshot.ServerTimestampBehavior.ESTIMATE,
+            )
+            .sortedByDescending { it.updatedAt?.toDate()?.time ?: it.createdAt?.toDate()?.time ?: 0L }
         }
         .catch { error ->
           val fsErr = error.unwrapFirestoreException()
@@ -709,6 +711,298 @@ class EvoriaCloudRepository(
           throw error
         }
     )
+  }
+
+  suspend fun sendSharedMusic(
+    coupleId: String,
+    memberUids: List<String>,
+    senderName: String,
+    recipientUid: String,
+    kind: String,
+    title: String,
+    subtitle: String?,
+    externalUrl: String?,
+    coverUrl: String?,
+    tracksJson: String,
+  ): Result<String> = runCatching {
+    val uid = requireUserId()
+    require(coupleId.isNotBlank() && recipientUid.isNotBlank() && uid != recipientUid && memberUids.size == 2) {
+      "Data pasangan tidak valid untuk mengirim musik."
+    }
+    require(kind == "track" || kind == "playlist") { "Tipe kiriman musik tidak valid." }
+    val shareId = "smus_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+    val docRef =
+      db.collection("couples").document(coupleId).collection("shared_music").document(shareId)
+    val payload =
+      mapOf(
+          "senderUid" to uid,
+          "senderName" to senderName.trim().ifBlank { "Pasangan EVORIA" }.take(80),
+          "recipientUid" to recipientUid,
+          "memberUids" to memberUids,
+          "kind" to kind,
+          "title" to title.trim().ifBlank { "Kiriman Musik" }.take(160),
+          "subtitle" to subtitle?.trim()?.takeIf { it.isNotEmpty() }?.take(300),
+          "externalUrl" to externalUrl?.trim()?.takeIf { it.isNotEmpty() }?.take(500),
+          "coverUrl" to coverUrl?.trim()?.takeIf { it.isNotEmpty() }?.take(500),
+          "tracksJson" to tracksJson.take(40_000),
+          "status" to "pending",
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        .filterNonNull()
+    try {
+      docRef.set(payload).await()
+      shareId
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, docRef.path, auth)
+      throw e
+    }
+  }
+
+  suspend fun respondToSharedMusic(
+    coupleId: String,
+    shareId: String,
+    newStatus: String,
+  ): Result<Unit> = runCatching {
+    requireUserId()
+    require(newStatus in listOf("accepted", "declined", "revoked")) {
+      "Status kiriman musik tidak valid: $newStatus"
+    }
+    val docRef =
+      db.collection("couples").document(coupleId).collection("shared_music").document(shareId)
+    try {
+      docRef
+        .update(
+          mapOf(
+            "status" to newStatus,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, docRef.path, auth)
+      throw e
+    }
+  }
+
+  fun observeSharedReflections(coupleId: String): Flow<List<SharedReflectionDto>> = flow {
+    val uid = requireUserId()
+    val path = "couples/$coupleId/shared_reflections"
+    emitAll(
+      db.collection("couples")
+        .document(coupleId)
+        .collection("shared_reflections")
+        .whereArrayContains("memberUids", uid)
+        .snapshots()
+        .map { snap ->
+          snap
+            .toObjects(
+              SharedReflectionDto::class.java,
+              DocumentSnapshot.ServerTimestampBehavior.ESTIMATE,
+            )
+            .sortedByDescending { it.updatedAt?.toDate()?.time ?: it.createdAt?.toDate()?.time ?: 0L }
+        }
+        .catch { error ->
+          val fsErr = error.unwrapFirestoreException()
+          if (fsErr == null && error is CancellationException) throw error
+          if (auth.currentUser?.uid == uid) {
+            handleFirestoreError(fsErr ?: error, OperationType.LIST, path, auth)
+          }
+          throw error
+        }
+    )
+  }
+
+  suspend fun publishSharedReflection(
+    coupleId: String,
+    memberUids: List<String>,
+    reflectionId: String,
+    authorName: String,
+    kind: String,
+    title: String,
+    body: String,
+    unlockAtMillis: Long? = null,
+    isSealed: Boolean = false,
+  ): Result<Unit> = runCatching {
+    val uid = requireUserId()
+    require(kind in listOf("journal", "letter", "capsule")) {
+      "Jenis refleksi bersama tidak valid: $kind"
+    }
+    val cleanTitle = title.trim().ifBlank { "Refleksi Bersama" }.take(160)
+    val cleanBody = body.trim().ifBlank { cleanTitle }.take(8000)
+    val docRef =
+      db.collection("couples")
+        .document(coupleId)
+        .collection("shared_reflections")
+        .document(reflectionId)
+
+    val existingSnap =
+      try {
+        docRef.get().await()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (_: Exception) {
+        null
+      }
+
+    if (existingSnap?.exists() == true) {
+      val updates =
+        mapOf(
+          "title" to cleanTitle,
+          "body" to cleanBody,
+          "isSealed" to isSealed,
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+      try {
+        docRef.update(updates).await()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, docRef.path, auth)
+        throw e
+      }
+    } else {
+      val payload =
+        mapOf(
+            "authorUid" to uid,
+            "authorName" to authorName.trim().ifBlank { "Pasangan EVORIA" }.take(80),
+            "memberUids" to memberUids,
+            "kind" to kind,
+            "title" to cleanTitle,
+            "body" to cleanBody,
+            "unlockAtMillis" to unlockAtMillis,
+            "isSealed" to isSealed,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+          .filterNonNull()
+      try {
+        docRef.set(payload).await()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.CREATE, docRef.path, auth)
+        throw e
+      }
+    }
+  }
+
+  suspend fun deleteSharedReflection(coupleId: String, reflectionId: String): Result<Unit> = runCatching {
+    requireUserId()
+    val docRef =
+      db.collection("couples")
+        .document(coupleId)
+        .collection("shared_reflections")
+        .document(reflectionId)
+    try {
+      docRef.delete().await()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, docRef.path, auth)
+      throw e
+    }
+  }
+
+  fun observeNotifications(coupleId: String): Flow<List<NotificationItemDto>> = flow {
+    val uid = requireUserId()
+    val path = "couples/$coupleId/notifications"
+    emitAll(
+      db.collection("couples")
+        .document(coupleId)
+        .collection("notifications")
+        .whereArrayContains("memberUids", uid)
+        .snapshots()
+        .map { snap ->
+          snap
+            .toObjects(
+              NotificationItemDto::class.java,
+              DocumentSnapshot.ServerTimestampBehavior.ESTIMATE,
+            )
+            .sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
+        }
+        .catch { error ->
+          val fsErr = error.unwrapFirestoreException()
+          if (fsErr == null && error is CancellationException) throw error
+          if (auth.currentUser?.uid == uid) {
+            handleFirestoreError(fsErr ?: error, OperationType.LIST, path, auth)
+          }
+          throw error
+        }
+    )
+  }
+
+  suspend fun sendPartnerNotification(
+    coupleId: String,
+    memberUids: List<String>,
+    recipientUid: String,
+    kind: String,
+    title: String,
+    body: String,
+  ): Result<Unit> = runCatching {
+    val uid = requireUserId()
+    require(coupleId.isNotBlank() && recipientUid.isNotBlank() && memberUids.size == 2 && uid in memberUids) {
+      "Data pasangan tidak valid untuk mengirim notifikasi."
+    }
+    val notificationId = "ntf_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+    val docRef =
+      db.collection("couples")
+        .document(coupleId)
+        .collection("notifications")
+        .document(notificationId)
+    val cleanTitle = title.trim().ifBlank { "Kabar EVORIA" }.take(140)
+    val cleanBody = body.trim().ifBlank { cleanTitle }.take(400)
+    val payload =
+      mapOf(
+        "recipientUid" to recipientUid,
+        "actorUid" to uid,
+        "memberUids" to memberUids,
+        "kind" to kind.trim().ifBlank { "info" }.take(40),
+        "title" to cleanTitle,
+        "body" to cleanBody,
+        "isRead" to false,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp(),
+      )
+    try {
+      docRef.set(payload).await()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, docRef.path, auth)
+      throw e
+    }
+  }
+
+  suspend fun markRemoteNotificationsRead(
+    coupleId: String,
+    notificationIds: List<String>,
+  ): Result<Unit> = runCatching {
+    requireUserId()
+    if (notificationIds.isEmpty()) return@runCatching
+    val col = db.collection("couples").document(coupleId).collection("notifications")
+    for (id in notificationIds) {
+      val docRef = col.document(id)
+      try {
+        docRef
+          .update(
+            mapOf(
+              "isRead" to true,
+              "updatedAt" to FieldValue.serverTimestamp(),
+            )
+          )
+          .await()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, docRef.path, auth)
+        throw e
+      }
+    }
   }
 
   suspend fun savePrivateBackup(

@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -9,22 +10,28 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import com.example.data.ai.EvoriaSearchEngine
 import com.example.data.local.AppUserPrefs
+import com.example.data.local.AutoLockTimeout
 import com.example.data.local.EvoriaAccentPreset
 import com.example.data.local.EvoriaDatabase
 import com.example.data.local.EvoriaSanctuaryRepository
+import com.example.data.local.KenanganCollectionEntity
 import com.example.data.local.LocalAlbumEntity
 import com.example.data.local.LocalMemoryEntity
+import com.example.data.local.LockMethod
 import com.example.data.local.NavbarGlassIntensity
 import com.example.data.local.NavbarThemeStyle
 import com.example.data.local.PinVerifyResult
@@ -34,12 +41,20 @@ import com.example.data.local.SecuritySettings
 import com.example.data.local.ThemeMode
 import com.example.data.local.TimeCapsuleEntity
 import com.example.data.local.TrackEntity
+import com.example.data.local.UploadJobEntity
 import com.example.data.local.canEditDeveloperSocials
+import com.example.data.remote.SharedMusicDto
+import com.example.data.remote.SharedReflectionDto
 import com.example.data.remote.SpotifyPlaylistImporter
 import com.example.data.remote.YouTubeDataApiClient
+import com.example.data.remote.YouTubeTrackMatch
 import com.example.media.EvoriaPlayerManager
 import com.example.media.MusicPlayerState
+import com.example.notifications.EvoriaNotificationHelper
+import com.example.ui.AiMemoryDraftUiState
+import com.example.ui.AiReflectionUiState
 import com.example.ui.SearchUiState
+import com.example.ui.YouTubeDirectSearchUiState
 import com.example.ui.components.LiquidGlassInteractionState
 import com.example.ui.components.LiquidGlassNavbar
 import com.example.ui.components.LiquidGlassTelemetry
@@ -51,17 +66,32 @@ import com.example.ui.components.computeTouchTargetLeftPx
 import com.example.ui.components.formatIndoDate
 import com.example.ui.matchLocalAudioToTracks
 import com.example.ui.screens.AboutEvoriaScreen
+import com.example.ui.screens.AddOrEditMemoryScreen
+import com.example.ui.screens.AppearanceSettingsScreen
 import com.example.ui.screens.JelajahScreen
 import com.example.ui.screens.KenanganScreen
 import com.example.ui.screens.MusicAndSoundtrackScreen
 import com.example.ui.screens.ProfilScreen
+import com.example.ui.screens.RefleksiScreen
+import com.example.ui.screens.ShareInboxScreen
+import com.example.ui.screens.UploadQueueScreen
+import com.example.ui.screens.buildAppEmbedOrigin
+import com.example.ui.screens.buildYouTubeIFrameHtml
+import com.example.ui.screens.buildYouTubeMobileWatchBridgeJs
+import com.example.ui.screens.computeRangeSelection
 import com.example.ui.screens.filterAndSortMemories
 import com.example.ui.screens.formatGallerySectionHeader
+import com.example.ui.screens.isYouTubeEmbedFallbackErrorCode
 import com.example.ui.screens.normalizeSocialUrl
+import com.example.ui.screens.resolveYouTubeInAppFallbackUrl
 import com.example.ui.theme.EvoriaTheme
 import com.example.util.DisplayModeCandidate
+import com.example.util.MediaStorageHelper
+import com.example.util.QrCodeGenerator
 import com.example.util.selectLocked60HzDisplayModeId
 import com.example.util.shouldMutateWindowAttributesFor60Fps
+import java.io.File
+import java.time.ZoneId
 import org.junit.Rule
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -1104,6 +1134,9 @@ class EvoriaLogicTest {
       }
     }
 
+    composeRule.onNodeWithTag("kenangan_subtab_galeri").assertExists().performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("galeri_grid").assertExists()
     composeRule.onNodeWithTag("memory_card_m_gal_1").assertExists()
     composeRule.onNodeWithTag("memory_card_m_gal_2").assertExists()
   }
@@ -1208,13 +1241,13 @@ class EvoriaLogicTest {
   }
 
   @Test
-  fun lock60FpsPreference_defaultsTrueAndPersistsToggles() = runBlocking {
+  fun lock60FpsPreference_defaultsFalseForAdaptiveSmoothnessAndPersistsToggles() = runBlocking {
     val prefs = SecurityPreferences(context)
-    assertTrue(AppUserPrefs().lock60Fps)
-    prefs.setLock60Fps(false)
-    assertFalse(prefs.userPrefsFlow.first().lock60Fps)
+    assertFalse(AppUserPrefs().lock60Fps)
     prefs.setLock60Fps(true)
     assertTrue(prefs.userPrefsFlow.first().lock60Fps)
+    prefs.setLock60Fps(false)
+    assertFalse(prefs.userPrefsFlow.first().lock60Fps)
   }
 
   @Test
@@ -1356,5 +1389,890 @@ class EvoriaLogicTest {
     assertEquals(0f, latestTelemetry.bulgeFactor, 0.02f)
     assertEquals(0f, latestTelemetry.waistPinchFactor, 0.02f)
     assertEquals(0f, latestTelemetry.chromaticDispersionDp, 0.05f)
+  }
+
+  @Test
+  fun mediaStorageHelper_buildsShareViaAllAppsChooserForSingleMultipleAndStory() {
+    val photo1 =
+      LocalMemoryEntity(
+        id = "m_s_1",
+        ownerUid = "u1",
+        title = "Senja Pantai",
+        caption = "Langit oranye indah",
+        locationName = "Medan",
+        mediaType = "photo",
+        mediaUri = "content://media/external/images/1",
+        memoryDateMillis = 1000L,
+        createdAtMillis = 1000L,
+        updatedAtMillis = 1000L,
+      )
+    val video1 =
+      LocalMemoryEntity(
+        id = "m_s_2",
+        ownerUid = "u1",
+        title = "Ombak Sore",
+        mediaType = "video",
+        mediaUri = "content://media/external/video/2",
+        memoryDateMillis = 2000L,
+        createdAtMillis = 2000L,
+        updatedAtMillis = 2000L,
+      )
+    val story1 =
+      LocalMemoryEntity(
+        id = "m_s_3",
+        ownerUid = "u1",
+        title = "Catatan Kecil",
+        story = "Hari yang hangat bersama.",
+        mediaType = "story",
+        mediaUri = null,
+        memoryDateMillis = 3000L,
+        createdAtMillis = 3000L,
+        updatedAtMillis = 3000L,
+      )
+
+    assertEquals("image/*", MediaStorageHelper.resolveShareMimeType(listOf(photo1)))
+    assertEquals("video/*", MediaStorageHelper.resolveShareMimeType(listOf(video1)))
+    assertEquals("*/*", MediaStorageHelper.resolveShareMimeType(listOf(photo1, video1)))
+    assertEquals("text/plain", MediaStorageHelper.resolveShareMimeType(listOf(story1)))
+
+    val singleChooser = MediaStorageHelper.buildShareMemoriesChooserIntent(context, listOf(photo1))
+    assertNotNull(singleChooser)
+    assertEquals(Intent.ACTION_CHOOSER, singleChooser!!.action)
+    @Suppress("DEPRECATION")
+    val singleTarget = singleChooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+    assertNotNull(singleTarget)
+    assertEquals(Intent.ACTION_SEND, singleTarget!!.action)
+    assertEquals("image/*", singleTarget.type)
+    assertTrue((singleTarget.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0)
+
+    val multiChooser = MediaStorageHelper.buildShareMemoriesChooserIntent(context, listOf(photo1, video1))
+    assertNotNull(multiChooser)
+    @Suppress("DEPRECATION")
+    val multiTarget = multiChooser!!.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+    assertNotNull(multiTarget)
+    assertEquals(Intent.ACTION_SEND_MULTIPLE, multiTarget!!.action)
+    assertEquals("*/*", multiTarget.type)
+    assertTrue((multiTarget.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0)
+
+    val storyChooser = MediaStorageHelper.buildShareMemoriesChooserIntent(context, listOf(story1))
+    assertNotNull(storyChooser)
+    @Suppress("DEPRECATION")
+    val storyTarget = storyChooser!!.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+    assertNotNull(storyTarget)
+    assertEquals(Intent.ACTION_SEND, storyTarget!!.action)
+    assertEquals("text/plain", storyTarget.type)
+    assertTrue(storyTarget.getStringExtra(Intent.EXTRA_TEXT).orEmpty().contains("Catatan Kecil"))
+  }
+
+  @Test
+  fun youtubeDataApiClient_parsesPublicSearchHtmlAndMmSsDurations() {
+    assertEquals(225_000L, YouTubeDataApiClient.parseMmSsDurationMs("3:45"))
+    assertEquals(3_723_000L, YouTubeDataApiClient.parseMmSsDurationMs("1:02:03"))
+    assertEquals(0L, YouTubeDataApiClient.parseMmSsDurationMs("invalid"))
+
+    val fakeHtml =
+      """
+      <html><head><script>var ytInitialData = {
+        "contents": {
+          "twoColumnSearchResultsRenderer": {
+            "primaryContents": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "itemSectionRenderer": {
+                      "contents": [
+                        {
+                          "videoRenderer": {
+                            "videoId": "shortVid123",
+                            "title": { "runs": [{ "text": "Short Preview #shorts" }] },
+                            "ownerText": { "runs": [{ "text": "Clips" }] },
+                            "lengthText": { "simpleText": "0:18" }
+                          }
+                        },
+                        {
+                          "videoRenderer": {
+                            "videoId": "dQw4w9WgXcQ",
+                            "title": { "runs": [{ "text": "Lagu Kenangan (Official Audio)" }] },
+                            "ownerText": { "runs": [{ "text": "Tulus - Topic" }] },
+                            "lengthText": { "simpleText": "4:12" }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      };</script></head></html>
+      """.trimIndent()
+
+    val parsed = YouTubeDataApiClient.parsePublicSearchHtml(fakeHtml, maxResults = 10)
+    assertEquals(1, parsed.size)
+    assertEquals("dQw4w9WgXcQ", parsed.first().videoId)
+    assertEquals("Lagu Kenangan (Official Audio)", parsed.first().title)
+    assertEquals("Tulus - Topic", parsed.first().channelTitle)
+    assertEquals(252_000L, parsed.first().durationMs)
+  }
+
+  @Test
+  fun kenanganScreen_separatesKenanganAlbumGaleriAndSupportsMultiSelectDelete() {
+    val now = 1_700_000_000_000L
+    val album1 =
+      LocalAlbumEntity(
+        id = "alb_10",
+        ownerUid = "u1",
+        title = "Liburan Bali",
+        description = "Pantai selatan",
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    val album2 =
+      LocalAlbumEntity(
+        id = "alb_11",
+        ownerUid = "u1",
+        title = "Pulau Nusa Penida",
+        description = "Trip lanjutan",
+        createdAtMillis = now - 2000L,
+        updatedAtMillis = now - 2000L,
+      )
+    val collection =
+      KenanganCollectionEntity(
+        id = "kng_10",
+        ownerUid = "u1",
+        title = "Kompilasi Bali",
+        description = "Dua album pantai bersama",
+        albumIdsCsv = "alb_10,alb_11",
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    val mem1 =
+      LocalMemoryEntity(
+        id = "m_k_1",
+        ownerUid = "u1",
+        albumId = "alb_10",
+        title = "Matahari Terbit",
+        locationName = "Sanur",
+        mediaType = "photo",
+        mediaUri = "file:///tmp/sanur.jpg",
+        memoryDateMillis = now,
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    val mem2 =
+      LocalMemoryEntity(
+        id = "m_k_2",
+        ownerUid = "u1",
+        albumId = "alb_10",
+        title = "Cerita Senja",
+        story = "Kami berjalan di tepi pantai.",
+        mediaType = "story",
+        mediaUri = null,
+        memoryDateMillis = now - 5000L,
+        createdAtMillis = now - 5000L,
+        updatedAtMillis = now - 5000L,
+      )
+    var deletedBatch: List<LocalMemoryEntity> = emptyList()
+
+    composeRule.setContent {
+      EvoriaTheme {
+        KenanganScreen(
+          albums = listOf(album1, album2),
+          memories = listOf(mem1, mem2),
+          kenanganCollections = listOf(collection),
+          onOpenAlbum = {},
+          onOpenMemory = {},
+          onOpenAddMemory = {},
+          onImportGalleryPhotos = {},
+          onSaveAlbum = { _, _, _, _, _, _, _ -> },
+          onToggleFavorite = {},
+          onDeleteMemories = { deletedBatch = it },
+        )
+      }
+    }
+
+    // Default Kenangan sub-page shows multi-album compilation cards (NOT individual photos)
+    composeRule.onNodeWithTag("kenangan_collection_kng_10").assertExists()
+
+    // Switch to Album sub-page -> shows dedicated album grid & create album CTA
+    composeRule.onNodeWithTag("kenangan_subtab_album").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("create_album_button").assertExists()
+    composeRule.onNodeWithTag("album_card_alb_10").assertExists()
+
+    // Switch to Galeri sub-page -> shows 4-col photo/video/story grid & multi-select delete
+    composeRule.onNodeWithTag("kenangan_subtab_galeri").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("galeri_grid").assertExists()
+    composeRule.onNodeWithTag("memory_card_m_k_1").assertExists()
+
+    composeRule.onNodeWithTag("kenangan_multiselect_toggle").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("kenangan_multiselect_select_all").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("kenangan_multiselect_delete").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("kenangan_confirm_batch_delete").performClick()
+    composeRule.waitForIdle()
+
+    assertEquals(setOf("m_k_1", "m_k_2"), deletedBatch.map { it.id }.toSet())
+  }
+
+  @Test
+  fun musicScreen_directYouTubeSearchDisplaysResultsAndPlaysDirectly() {
+    var searchedQuery = ""
+    var playedDirectly: YouTubeTrackMatch? = null
+    var openedFullPlayer = false
+    val sampleMatch =
+      YouTubeTrackMatch(
+        videoId = "yt_abc_999",
+        title = "Hati-Hati di Jalan",
+        channelTitle = "Tulus",
+        durationMs = 242_000L,
+        embeddable = true,
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        MusicAndSoundtrackScreen(
+          playlists = listOf(PlaylistEntity("pl_1", "Soundtrack", "Kita", null, 100L)),
+          tracks = emptyList(),
+          albums = emptyList(),
+          playerState = MusicPlayerState(),
+          youtubeDirectSearchState =
+            YouTubeDirectSearchUiState.Success(
+              query = "Hati Hati di Jalan",
+              results = listOf(sampleMatch),
+            ),
+          onSearchYouTubeDirect = { searchedQuery = it },
+          onPlayYouTubeMatchDirectly = { match, _, onReady ->
+            playedDirectly = match
+            onReady()
+          },
+          onCreatePlaylist = { _, _, _ -> },
+          onAddAudioTrack = { _, _, _, _ -> },
+          onMoveTrackOrder = { _, _, _ -> },
+          onDeleteTrack = {},
+          onPlayTrack = { _, _ -> },
+          onOpenFullPlayer = { openedFullPlayer = true },
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("music_youtube_search_input").performTextReplacement("Tulus Hati Hati")
+    composeRule.onNodeWithTag("music_youtube_search_submit").performClick()
+    composeRule.waitForIdle()
+    assertEquals("Tulus Hati Hati", searchedQuery)
+
+    composeRule.onNodeWithTag("music_youtube_results_list").assertExists()
+    composeRule.onNodeWithTag("yt_direct_play_yt_abc_999").performClick()
+    composeRule.waitForIdle()
+
+    assertEquals(sampleMatch, playedDirectly)
+    assertTrue(openedFullPlayer)
+  }
+
+  @Test
+  fun youtubeDataApiClient_parsesInnerTubeMobileAndEscapedHtmlAndBuildsCleanQueries() {
+    val queries =
+      YouTubeDataApiClient.buildCandidateQueries(
+        title = "Pura-Pura Lupa (Remastered 2024) (feat. Guest)",
+        artist = "Mahen, Guest Artist",
+      )
+    assertEquals(
+      listOf(
+        "Pura-Pura Lupa Mahen official audio",
+        "Pura-Pura Lupa Mahen",
+        "Pura-Pura Lupa",
+      ),
+      queries,
+    )
+
+    val innerTubeJson =
+      """
+      {
+        "contents": {
+          "sectionListRenderer": {
+            "contents": [
+              {
+                "videoWithContextRenderer": {
+                  "videoId": "vidMahen001",
+                  "headline": { "runs": [{ "text": "Mahen - Pura-Pura Lupa (Official Lyric Video)" }] },
+                  "shortBylineText": { "runs": [{ "text": "Indo Semar Records" }] },
+                  "lengthText": { "runs": [{ "text": "4:08" }] }
+                }
+              },
+              {
+                "compactVideoRenderer": {
+                  "videoId": "vidCompact2",
+                  "title": { "simpleText": "Pura-Pura Lupa Acoustic" },
+                  "longBylineText": { "runs": [{ "text": "Mahen - Topic" }] },
+                  "lengthText": { "simpleText": "3:55" }
+                }
+              },
+              {
+                "videoWithContextRenderer": {
+                  "videoId": "shortClip15",
+                  "headline": { "runs": [{ "text": "Teaser" }] },
+                  "shortBylineText": { "runs": [{ "text": "Clips" }] },
+                  "lengthText": { "simpleText": "0:15" }
+                }
+              }
+            ]
+          }
+        }
+      }
+      """.trimIndent()
+
+    val innerParsed = YouTubeDataApiClient.parseInnerTubeJson(innerTubeJson, maxResults = 10)
+    assertEquals(2, innerParsed.size)
+    assertEquals("vidMahen001", innerParsed[0].videoId)
+    assertEquals(248_000L, innerParsed[0].durationMs)
+    assertEquals("vidCompact2", innerParsed[1].videoId)
+    assertEquals(235_000L, innerParsed[1].durationMs)
+
+    // JS hex-escaped JSON literal used in mobile YouTube HTML responses
+    val rawInner = """{"videoRenderer":{"videoId":"hexVid12345","title":{"runs":[{"text":"Pura-Pura Lupa"}]},"ownerText":{"runs":[{"text":"Mahen"}]},"lengthText":{"simpleText":"4:05"}}}"""
+    val hexEscaped = rawInner.replace("{", "\\x7b").replace("}", "\\x7d").replace("\"", "\\x22")
+    val escapedHtml = """<html><script>var ytInitialData = '$hexEscaped';</script></html>"""
+
+    val htmlParsed = YouTubeDataApiClient.parsePublicSearchHtml(escapedHtml, maxResults = 5)
+    assertEquals(1, htmlParsed.size)
+    assertEquals("hexVid12345", htmlParsed.first().videoId)
+    assertEquals("Pura-Pura Lupa", htmlParsed.first().title)
+    assertEquals(245_000L, htmlParsed.first().durationMs)
+  }
+
+  @Test
+  fun profileBannerPreference_persistsVideoAndPhotoAndClearsCleanly() = runBlocking {
+    val prefs = SecurityPreferences(context)
+    prefs.clearProfileBanner()
+    assertNull(prefs.userPrefsFlow.first().profileBannerUri)
+    assertEquals("", prefs.userPrefsFlow.first().profileBannerType)
+
+    prefs.setProfileBanner("file:///data/user/0/com.example/files/media/banner_1.mp4", "video")
+    val loaded = prefs.userPrefsFlow.first()
+    assertEquals("file:///data/user/0/com.example/files/media/banner_1.mp4", loaded.profileBannerUri)
+    assertEquals("video", loaded.profileBannerType)
+
+    prefs.clearProfileBanner()
+    val cleared = prefs.userPrefsFlow.first()
+    assertNull(cleared.profileBannerUri)
+    assertEquals("", cleared.profileBannerType)
+  }
+
+  @Test
+  fun profilScreen_rendersBannerPickerAndResetButtonWhenCustomBannerIsSet() {
+    var resetCalled = false
+    composeRule.setContent {
+      EvoriaTheme {
+        ProfilScreen(
+          currentUid = "u1",
+          profile = null,
+          fallbackName = "Raffa",
+          couple = null,
+          albumCount = 1,
+          memoryCount = 2,
+          journalCount = 1,
+          capsuleCount = 0,
+          pendingShareRequestsCount = 0,
+          unreadNotificationCount = 0,
+          localStorageLabel = "12 KB",
+          userPrefs =
+            AppUserPrefs(
+              profileBannerUri = "file:///tmp/custom_banner.mp4",
+              profileBannerType = "video",
+            ),
+          securitySettings = SecuritySettings(),
+          onSetThemeMode = {},
+          onSetReducedMotion = {},
+          onOpenConnectPartner = {},
+          onOpenShareInbox = {},
+          onOpenNotifications = {},
+          onOpenMusic = {},
+          onOpenUploadQueue = {},
+          onOpenSecurity = {},
+          onOpenBackupStorage = {},
+          onOpenLiquidGlassShowcase = {},
+          onResetProfileBanner = { resetCalled = true },
+          onSignOut = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("profil_banner_picker_button").assertExists()
+    composeRule.onNodeWithTag("profil_banner_reset_button").assertExists().performClick()
+    composeRule.waitForIdle()
+    assertTrue(resetCalled)
+  }
+
+  @Test
+  fun refleksiScreen_enforcesPartnerCapsuleLockAndTriggersAiInsightCallback() {
+    var requestedAi = false
+    val futureUnlock = System.currentTimeMillis() + 5L * 86_400_000L
+    val partnerCapsule =
+      SharedReflectionDto(
+        id = "ref_cap_partner",
+        authorUid = "partner_uid",
+        authorName = "Nadia",
+        memberUids = listOf("my_uid", "partner_uid"),
+        kind = "capsule",
+        title = "Kapsul Masa Depan Nadia",
+        body = "Rahasia yang tidak boleh terlihat sebelum tanggal buka.",
+        unlockAtMillis = futureUnlock,
+        isSealed = true,
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        RefleksiScreen(
+          journals = emptyList(),
+          letters = emptyList(),
+          moods = emptyList(),
+          reflectionAnswers = emptyList(),
+          capsules = emptyList(),
+          onSaveJournal = { _, _, _, _, _, _, _, _ -> },
+          onDeleteJournal = {},
+          onSaveLetter = { _, _, _, _, _, _, _ -> },
+          onDeleteLetter = {},
+          onRecordMood = { _, _ -> },
+          onSaveReflectionAnswer = { _, _, _ -> },
+          onCreateTimeCapsule = { _, _, _, _, _ -> },
+          onReadEnforcedCapsule = { null },
+          onOpenMusic = {},
+          sharedReflections = listOf(partnerCapsule),
+          currentUid = "my_uid",
+          aiConsentGranted = true,
+          aiReflectionState = AiReflectionUiState.Idle,
+          onGenerateAiReflection = { requestedAi = true },
+        )
+      }
+    }
+
+    // Verify sealed partner capsule never leaks body while locked
+    composeRule.onNodeWithTag("refleksi_tab_kapsul").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("refleksi_lazy_column").performScrollToNode(hasText("Kapsul Masa Depan Nadia"))
+    composeRule.waitForIdle()
+    composeRule.onNodeWithText("Kapsul Masa Depan Nadia").assertExists().performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithText("masih tersegel rapat", substring = true).assertExists()
+    composeRule.onNodeWithText("Rahasia yang tidak boleh terlihat sebelum tanggal buka.").assertDoesNotExist()
+    composeRule.onNodeWithText("Tutup").performClick()
+    composeRule.waitForIdle()
+
+    // Scroll back to tabs row, switch to Pertanyaan tab & trigger Gemini AI reflection button
+    composeRule.onNodeWithTag("refleksi_lazy_column").performScrollToIndex(0)
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("refleksi_tab_pertanyaan").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("refleksi_lazy_column").performScrollToNode(hasTestTag("refleksi_ai_insight_card"))
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("refleksi_ai_generate_button").assertExists().performClick()
+    composeRule.waitForIdle()
+    assertTrue(requestedAi)
+  }
+
+  @Test
+  fun addOrEditMemoryScreen_invokesAiDraftCallback() {
+    var draftTriggered = false
+    composeRule.setContent {
+      EvoriaTheme {
+        AddOrEditMemoryScreen(
+          existing = null,
+          albums = emptyList(),
+          aiDraftState = AiMemoryDraftUiState.Idle,
+          aiConsentGranted = true,
+          onGenerateAiDraft = { _, _, _ -> draftTriggered = true },
+          onClearAiDraft = {},
+          onBack = {},
+          onSaveMediaMemories = { _, _, _, _, _, _, _, _ -> },
+          onSaveStoryOnly = { _, _, _, _, _, _, _, _ -> },
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("memory_ai_draft_button").assertExists().performScrollTo().performClick()
+    composeRule.waitForIdle()
+    assertTrue(draftTriggered)
+  }
+
+  @Test
+  fun youtubeDataApiClient_parsesYouTubeMusicLockupIndonesianDurationAndNbspArtists() {
+    assertEquals(244_000L, YouTubeDataApiClient.parseMmSsDurationMs("4.04"))
+    assertEquals("KAROL G", YouTubeDataApiClient.cleanPrimaryArtist("KAROL G,\u00A0Judeline,\u00A0rusowsky"))
+
+    val ytMusicJson =
+      """
+      {
+        "contents": {
+          "musicResponsiveListItemRenderer": {
+            "overlay": {
+              "musicItemThumbnailOverlayRenderer": {
+                "content": {
+                  "musicPlayButtonRenderer": {
+                    "playNavigationEndpoint": {
+                      "watchEndpoint": { "videoId": "9II3OGZETo4" }
+                    }
+                  }
+                }
+              }
+            },
+            "flexColumns": [
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": { "runs": [{ "text": "Hati-Hati di Jalan" }] }
+                }
+              },
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": { "runs": [{ "text": "Tulus • Lagu • 4.02" }] }
+                }
+              }
+            ]
+          }
+        },
+        "secondary": {
+          "lockupViewModel": {
+            "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+            "contentId": "abcDEF12345",
+            "metadata": {
+              "lockupMetadataViewModel": {
+                "title": { "content": "Hati-Hati di Jalan (Official Audio)" }
+              }
+            }
+          }
+        }
+      }
+      """.trimIndent()
+
+    val parsed = YouTubeDataApiClient.parseInnerTubeJson(ytMusicJson, maxResults = 10)
+    assertEquals(2, parsed.size)
+    assertEquals("9II3OGZETo4", parsed[0].videoId)
+    assertEquals("Hati-Hati di Jalan", parsed[0].title)
+    assertEquals("Tulus", parsed[0].channelTitle)
+    assertEquals(242_000L, parsed[0].durationMs)
+    assertEquals("abcDEF12345", parsed[1].videoId)
+    assertEquals("Hati-Hati di Jalan (Official Audio)", parsed[1].title)
+  }
+
+  @Test
+  fun musicScreen_autoMatchesUnmatchedSpotifyPlaylistAndHeroPlayTriggersFirstTrack() {
+    val autoMatchedPlaylistIds = mutableListOf<String>()
+    val matchedTrackIds = mutableListOf<String>()
+    val pl = PlaylistEntity("pl_sp_auto", "Favorit Berdua", "Dari Spotify", null, 100L, sourceType = "spotify")
+    val trk1 =
+      TrackEntity(
+        id = "trk_unmatched_1",
+        playlistId = "pl_sp_auto",
+        title = "Sial",
+        artist = "Mahalini",
+        mediaUri = "",
+        durationMs = 240_000L,
+        sortOrder = 0,
+        sourceType = "spotify",
+        youtubeVideoId = null,
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        MusicAndSoundtrackScreen(
+          playlists = listOf(pl),
+          tracks = listOf(trk1),
+          albums = emptyList(),
+          playerState = MusicPlayerState(),
+          onCreatePlaylist = { _, _, _ -> },
+          onMatchPlaylistWithYouTube = { autoMatchedPlaylistIds.add(it) },
+          onMatchTrackWithYouTube = { matchedTrackIds.add(it.id) },
+          onAddAudioTrack = { _, _, _, _ -> },
+          onMoveTrackOrder = { _, _, _ -> },
+          onDeleteTrack = {},
+          onPlayTrack = { _, _ -> },
+          onOpenFullPlayer = {},
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.waitForIdle()
+    assertEquals(listOf("pl_sp_auto"), autoMatchedPlaylistIds)
+
+    composeRule.onNodeWithTag("spotify_hero_play_button").assertExists().performClick()
+    composeRule.waitForIdle()
+    assertEquals(listOf("trk_unmatched_1"), matchedTrackIds)
+  }
+
+  @Test
+  fun youtubeInAppPlayback_handlesError152WithAppOriginAndMobileWatchBridge() {
+    assertTrue(isYouTubeEmbedFallbackErrorCode(152))
+    assertTrue(isYouTubeEmbedFallbackErrorCode(101))
+    assertTrue(isYouTubeEmbedFallbackErrorCode(150))
+    assertTrue(isYouTubeEmbedFallbackErrorCode(153))
+    assertTrue(isYouTubeEmbedFallbackErrorCode(5))
+    assertTrue(isYouTubeEmbedFallbackErrorCode(2))
+    assertTrue(isYouTubeEmbedFallbackErrorCode(0))
+    assertFalse(isYouTubeEmbedFallbackErrorCode(404))
+
+    val appOrigin = buildAppEmbedOrigin("com.aistudio.evoria.vqmtxr")
+    assertEquals("https://com.aistudio.evoria.vqmtxr", appOrigin)
+
+    val iframeHtml = buildYouTubeIFrameHtml("dQw4w9WgXcQ", appOrigin)
+    assertTrue(iframeHtml.contains("origin: 'https://com.aistudio.evoria.vqmtxr'"))
+    assertTrue(iframeHtml.contains("widget_referrer: 'https://com.aistudio.evoria.vqmtxr'"))
+    assertTrue(iframeHtml.contains("strict-origin-when-cross-origin"))
+    assertTrue(iframeHtml.contains("EvoriaYtBridge.onFallbackNeeded"))
+
+    val fallbackUrl = resolveYouTubeInAppFallbackUrl("dQw4w9WgXcQ?bad")
+    assertEquals("https://m.youtube.com/watch?v=dQw4w9WgXcQbad&autoplay=1", fallbackUrl)
+
+    val watchBridgeJs = buildYouTubeMobileWatchBridgeJs()
+    assertTrue(watchBridgeJs.contains("window.playCmd"))
+    assertTrue(watchBridgeJs.contains("window.pauseCmd"))
+    assertTrue(watchBridgeJs.contains("window.seekCmd"))
+    assertTrue(watchBridgeJs.contains("window.loadFullVideo"))
+    assertTrue(watchBridgeJs.contains("window.EvoriaYtBridge.onProgress"))
+  }
+
+  @Test
+  fun playerManager_youtubeErrorClearsOncePlaybackResumes() {
+    val manager = EvoriaPlayerManager(context)
+    val track =
+      TrackEntity(
+        id = "trk_yt_152",
+        playlistId = "pl_1",
+        title = "Pura Pura Lupa",
+        artist = "Mahen",
+        mediaUri = "",
+        durationMs = 240_000L,
+        sortOrder = 0,
+        sourceType = "youtube",
+        youtubeVideoId = "9II3OGZETo4",
+      )
+
+    manager.setQueueAndPlay(listOf(track), track.id)
+    manager.onYouTubePlayerError("Kendala embed (152)")
+    assertEquals("Kendala embed (152)", manager.state.value.errorMessage)
+    assertFalse(manager.state.value.isPlaying)
+
+    manager.onYouTubePlaybackUpdate(isPlaying = true, positionMs = 1500L, durationMs = 240_000L)
+    assertNull(manager.state.value.errorMessage)
+    assertTrue(manager.state.value.isPlaying)
+    assertEquals(1500L, manager.state.value.positionMs)
+
+    manager.release()
+  }
+
+  @Test
+  fun kenanganCollection_roomCrudAndMultiAlbumGrouping_worksAccurately() = runBlocking {
+    val now = 1_725_000_000_000L
+    val col =
+      KenanganCollectionEntity(
+        id = "kng_room_1",
+        ownerUid = "u1",
+        title = "Musim Panas",
+        description = "Gabungan tiga album",
+        albumIdsCsv = "alb_a, alb_b , alb_a, alb_c",
+        visibility = "shared",
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    assertEquals(listOf("alb_a", "alb_b", "alb_c"), col.albumIdList())
+
+    repo.saveKenanganCollection(col)
+    val observed = repo.observeKenanganCollections("u1").first()
+    assertEquals(1, observed.size)
+    assertEquals("Musim Panas", observed.first().title)
+
+    repo.deleteKenanganCollection("kng_room_1")
+    assertTrue(repo.observeKenanganCollections("u1").first().isEmpty())
+  }
+
+  @Test
+  fun dragSelection_computeRangeSelection_handlesForwardBackwardAndBase() {
+    val ids = listOf("a", "b", "c", "d", "e")
+    assertEquals(setOf("b", "c", "d"), computeRangeSelection(ids, anchorId = "b", hoveredId = "d"))
+    assertEquals(setOf("b", "c", "d"), computeRangeSelection(ids, anchorId = "d", hoveredId = "b"))
+    assertEquals(setOf("a", "c", "d", "e"), computeRangeSelection(ids, anchorId = "c", hoveredId = "e", baseSelection = setOf("a")))
+    assertEquals(setOf("a", "missing"), computeRangeSelection(ids, anchorId = "missing", hoveredId = "b", baseSelection = setOf("a")))
+  }
+
+  @Test
+  fun mediaStorageHelper_inspectMediaDetails_formatsDateSizeAndLocation() {
+    val tmpFile = File(context.cacheDir, "rincian_test_photo.jpg")
+    tmpFile.writeBytes(ByteArray(2048) { 1 })
+    val mem =
+      LocalMemoryEntity(
+        id = "mem_det_1",
+        ownerUid = "u1",
+        title = "Senja",
+        locationName = "Yogyakarta",
+        mediaType = "photo",
+        mediaUri = Uri.fromFile(tmpFile).toString(),
+        memoryDateMillis = 1_700_000_000_000L, // Nov 14, 2023 UTC
+        createdAtMillis = 1_700_000_000_000L,
+        updatedAtMillis = 1_700_000_000_000L,
+      )
+    val info = MediaStorageHelper.inspectMediaDetails(context, mem, ZoneId.of("UTC"))
+    assertEquals("rincian_test_photo.jpg", info.fileName)
+    assertEquals("2023", info.year)
+    assertEquals("14", info.dayOfMonth)
+    assertEquals(2048L, info.sizeBytes)
+    assertTrue(info.sizeFormatted.contains("KB"))
+    assertTrue(info.storageLocationLabel.contains("rincian_test_photo.jpg"))
+    tmpFile.delete()
+  }
+
+  @Test
+  fun qrCodeGenerator_extractInviteCode_handlesDeepLinksAndPlainCodes() {
+    assertEquals("AB12CD", QrCodeGenerator.extractInviteCode("evoria://invite?code=ab12cd"))
+    assertEquals("ZX98QW", QrCodeGenerator.extractInviteCode("https://evoria.app/join?code=zx98qw&ref=qr"))
+    assertEquals("KODE77", QrCodeGenerator.extractInviteCode("  kode77  "))
+    assertNull(QrCodeGenerator.extractInviteCode("not valid text!!"))
+    assertNull(QrCodeGenerator.extractInviteCode("12"))
+  }
+
+  @Test
+  fun securityPreferences_customAccentHexAndSyncLockMirror_workProperly() = runBlocking {
+    val prefs = SecurityPreferences(context)
+    prefs.setCustomAccentHex(0xFF4F46E5L)
+    assertEquals(0xFF4F46E5L, prefs.userPrefsFlow.first().customAccentHex)
+
+    // Choosing a named preset clears custom color cleanly
+    prefs.setAccentPreset(EvoriaAccentPreset.OCEAN)
+    assertNull(prefs.userPrefsFlow.first().customAccentHex)
+    assertEquals(EvoriaAccentPreset.OCEAN, prefs.userPrefsFlow.first().accentPreset)
+
+    // Synchronous background timestamp mirror updates immediately
+    val stamped = prefs.recordBackgroundTimestampSync(nowMillis = 999_888L)
+    assertEquals(999_888L, stamped)
+    assertTrue(prefs.securitySettingsFlow.first().lastBackgroundMillis >= 999_888L)
+  }
+
+  @Test
+  fun evoriaNotificationHelper_routesKindsAndRespectsCategoryToggles() {
+    assertEquals(EvoriaNotificationHelper.CHANNEL_INVITES, EvoriaNotificationHelper.channelForKind("partner_invite"))
+    assertEquals(EvoriaNotificationHelper.CHANNEL_CAPSULES, EvoriaNotificationHelper.channelForKind("capsule_ready"))
+    assertEquals(EvoriaNotificationHelper.CHANNEL_SECURITY, EvoriaNotificationHelper.channelForKind("security_pin"))
+    assertEquals(EvoriaNotificationHelper.CHANNEL_SHARES, EvoriaNotificationHelper.channelForKind("share_memory"))
+
+    val disabledShares = AppUserPrefs(notificationShares = false, notificationInvites = true)
+    assertFalse(EvoriaNotificationHelper.isCategoryEnabled("share_music", disabledShares))
+    assertTrue(EvoriaNotificationHelper.isCategoryEnabled("invite", disabledShares))
+  }
+
+  @Test
+  fun uploadQueueScreen_displaysMediaTypeAlbumAndDiagnostics() {
+    val now = 1_710_000_000_000L
+    val mem =
+      LocalMemoryEntity(
+        id = "m_q_1",
+        ownerUid = "u1",
+        albumId = "alb_q_1",
+        title = "Video Liburan",
+        mediaType = "video",
+        mediaUri = "",
+        memoryDateMillis = now,
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    val album = LocalAlbumEntity("alb_q_1", "u1", "Pantai Selatan", "", null, "shared", null, now, now)
+    val job =
+      UploadJobEntity(
+        id = "job_1",
+        memoryId = "m_q_1",
+        mediaUri = "",
+        targetAlbumId = "alb_q_1",
+        targetVisibility = "shared",
+        caption = "Video Liburan",
+        status = "queued",
+        attemptCount = 2,
+        lastError = null,
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        UploadQueueScreen(
+          jobs = listOf(job),
+          memories = listOf(mem),
+          albums = listOf(album),
+          onRetry = {},
+          onDelete = {},
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("upload_job_card_job_1").assertExists()
+    composeRule.onNodeWithText("Video Liburan").assertExists()
+    composeRule.onNodeWithText("Video").assertExists()
+    composeRule.onNodeWithText("Album: Pantai Selatan", substring = true).assertExists()
+  }
+
+  @Test
+  fun shareInboxScreen_displaysIncomingMusicAndInvokesSaveAndPlay() {
+    var savedPlayedFlag: Boolean? = null
+    val sharedPlaylist =
+      SharedMusicDto(
+        id = "sm_1",
+        senderUid = "partner_uid",
+        senderName = "Nadia",
+        recipientUid = "my_uid",
+        memberUids = listOf("my_uid", "partner_uid"),
+        kind = "playlist",
+        title = "Lagu Senja Kita",
+        subtitle = "Pilihan terbaik",
+        tracksJson = """[{"title":"Monokrom","artist":"Tulus"}]""",
+        status = "pending",
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        ShareInboxScreen(
+          currentUid = "my_uid",
+          requests = emptyList(),
+          sharedMusic = listOf(sharedPlaylist),
+          onAccept = {},
+          onDecline = {},
+          onRevoke = {},
+          onAcceptSharedMusic = { _, playNow -> savedPlayedFlag = playNow },
+          onDeclineSharedMusic = {},
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("share_inbox_music_section").assertExists()
+    composeRule.onNodeWithTag("shared_music_card_sm_1").assertExists()
+    composeRule.onNodeWithTag("accept_music_play_sm_1").performClick()
+    composeRule.waitForIdle()
+    assertEquals(true, savedPlayedFlag)
+  }
+
+  @Test
+  fun appearanceSettingsScreen_rendersFreeColorPaletteAndAppliesCustomAccent() {
+    var appliedHex: Long? = null
+    composeRule.setContent {
+      EvoriaTheme {
+        AppearanceSettingsScreen(
+          userPrefs = AppUserPrefs(customAccentHex = 0xFF00897BL),
+          onSetThemeMode = {},
+          onSetAccentPreset = {},
+          onSetCustomAccentHex = { appliedHex = it },
+          onSetNavbarThemeStyle = {},
+          onSetNavbarGlassIntensity = {},
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("tema_custom_color_card").assertExists()
+    composeRule.onNodeWithText("Palet Warna Bebas").assertExists()
+    composeRule.onNodeWithTag("tema_apply_custom_hex").performScrollTo().performClick()
+    composeRule.waitForIdle()
+    assertNotNull(appliedHex)
   }
 }

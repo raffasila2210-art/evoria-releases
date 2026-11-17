@@ -97,6 +97,35 @@ data class SharedContentRequestDto(
   @ServerTimestamp val updatedAt: Timestamp? = null,
 )
 
+@kotlinx.serialization.Serializable
+data class SharedMusicTrackItem(
+  val title: String,
+  val artist: String = "",
+  val durationMs: Long = 0L,
+  val sourceType: String = "spotify",
+  val externalUrl: String? = null,
+  val coverUrl: String? = null,
+  val youtubeVideoId: String? = null,
+)
+
+@IgnoreExtraProperties
+data class SharedMusicDto(
+  @DocumentId val id: String = "",
+  val senderUid: String = "",
+  val senderName: String = "",
+  val recipientUid: String = "",
+  val memberUids: List<String> = emptyList(),
+  val kind: String = "track", // "track" | "playlist"
+  val title: String = "",
+  val subtitle: String? = null,
+  val externalUrl: String? = null,
+  val coverUrl: String? = null,
+  val tracksJson: String = "[]",
+  val status: String = "pending", // "pending" | "accepted" | "declined" | "revoked"
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
 @IgnoreExtraProperties
 data class SharedReflectionDto(
   @DocumentId val id: String = "",

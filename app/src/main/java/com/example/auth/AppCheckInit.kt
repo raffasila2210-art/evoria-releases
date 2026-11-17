@@ -28,7 +28,7 @@ fun configureAppCheck(context: Context, intent: Intent?) {
         val prefs =
           context.getSharedPreferences("$DEBUG_STORE_PREFIX$persistenceKey", Context.MODE_PRIVATE)
         if (prefs.getString(DEBUG_SECRET_KEY, null) != debugToken) {
-          prefs.edit().putString(DEBUG_SECRET_KEY, debugToken).apply()
+          prefs.edit().putString(DEBUG_SECRET_KEY, debugToken).commit()
         }
         Log.d(TAG, "App Check debug secret configured successfully.")
       } else {

@@ -73,7 +73,7 @@ fun EvoriaSanctuaryBackdrop(
   Box(modifier = modifier.fillMaxSize().background(tokens.background)) {
     if (useWarmTreePhoto) {
       AsyncImage(
-        model = rememberThumbnailRequest(R.drawable.bg_home_tree, sizePx = 1080),
+        model = rememberThumbnailRequest(R.drawable.bg_home_tree, sizePx = 720),
         contentDescription = null,
         contentScale = ContentScale.Crop,
         colorFilter = WarmTreeColorFilter,

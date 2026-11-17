@@ -1,9 +1,12 @@
 package com.example.ui
 
+import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.ai.AiMemoryStoryDraft
+import com.example.data.ai.AiReflectionInsight
 import com.example.data.ai.EvoriaSearchEngine
 import com.example.data.ai.SearchOutcome
 import com.example.data.local.AppUserPrefs
@@ -12,6 +15,7 @@ import com.example.data.local.DEVELOPER_ADMIN_EMAIL
 import com.example.data.local.EvoriaAccentPreset
 import com.example.data.local.EvoriaSanctuaryRepository
 import com.example.data.local.JournalEntity
+import com.example.data.local.KenanganCollectionEntity
 import com.example.data.local.LetterEntity
 import com.example.data.local.LocalAlbumEntity
 import com.example.data.local.LocalMemoryEntity
@@ -39,17 +43,26 @@ import com.example.data.remote.NotificationItemDto
 import com.example.data.remote.SharedAlbumDto
 import com.example.data.remote.SharedContentRequestDto
 import com.example.data.remote.SharedMemoryDto
+import com.example.data.remote.SharedMusicDto
+import com.example.data.remote.SharedMusicTrackItem
+import com.example.data.remote.SharedReflectionDto
 import com.example.data.remote.SpotifyPlaylistImporter
 import com.example.data.remote.UserProfileDto
 import com.example.data.remote.YouTubeDataApiClient
 import com.example.data.remote.YouTubeSearchResult
+import com.example.data.remote.YouTubeTrackMatch
 import com.example.data.remote.unwrapFirestoreException
 import com.example.media.EvoriaPlayerManager
 import com.example.media.MusicPlayerState
+import com.example.notifications.EvoriaNotificationHelper
+import com.example.util.MediaStorageHelper
 import java.util.UUID
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -59,6 +72,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
@@ -79,7 +94,28 @@ sealed interface SpotifyImportUiState {
   data class Error(val message: String) : SpotifyImportUiState
 }
 
-@OptIn(ExperimentalCoroutinesApi::class)
+sealed interface YouTubeDirectSearchUiState {
+  data object Idle : YouTubeDirectSearchUiState
+  data object Loading : YouTubeDirectSearchUiState
+  data class Success(val query: String, val results: List<YouTubeTrackMatch>) : YouTubeDirectSearchUiState
+  data class Error(val message: String) : YouTubeDirectSearchUiState
+}
+
+sealed interface AiMemoryDraftUiState {
+  data object Idle : AiMemoryDraftUiState
+  data object Loading : AiMemoryDraftUiState
+  data class Success(val draft: AiMemoryStoryDraft) : AiMemoryDraftUiState
+  data class Error(val message: String) : AiMemoryDraftUiState
+}
+
+sealed interface AiReflectionUiState {
+  data object Idle : AiReflectionUiState
+  data object Loading : AiReflectionUiState
+  data class Success(val insight: AiReflectionInsight) : AiReflectionUiState
+  data class Error(val message: String) : AiReflectionUiState
+}
+
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class EvoriaViewModel(
   private val currentUserId: String,
   private val initialDisplayName: String,
@@ -89,10 +125,18 @@ class EvoriaViewModel(
   private val searchEngine: EvoriaSearchEngine,
   val playerManager: EvoriaPlayerManager,
   private val currentUserEmail: String? = null,
+  private val appContext: Context? = null,
 ) : ViewModel() {
 
+  private val _isSecurityResolved = MutableStateFlow(false)
+  val isSecurityResolved: StateFlow<Boolean> = _isSecurityResolved.asStateFlow()
+
+  private var hasUnlockedCurrentLaunch: Boolean = false
+  private var suppressNextBackgroundLock: Boolean = false
+  private val musicShareJson = Json { ignoreUnknownKeys = true }
+
   val userPrefs: StateFlow<AppUserPrefs> =
-    prefs.userPrefsFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), AppUserPrefs())
+    prefs.userPrefsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, AppUserPrefs())
 
   private val _optimisticActiveTab = MutableStateFlow<Int?>(null)
   val activeTabIndex: StateFlow<Int> =
@@ -102,7 +146,7 @@ class EvoriaViewModel(
       .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
   val securitySettings: StateFlow<SecuritySettings> =
-    prefs.securitySettingsFlow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), SecuritySettings())
+    prefs.securitySettingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, SecuritySettings())
 
   private val _isProfileResolved = MutableStateFlow(false)
   val isProfileResolved: StateFlow<Boolean> = _isProfileResolved.asStateFlow()
@@ -162,16 +206,35 @@ class EvoriaViewModel(
       }
       .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
+  val sharedMusic: StateFlow<List<SharedMusicDto>> =
+    activeCouple
+      .flatMapLatest { couple ->
+        if (couple == null) flowOf(emptyList())
+        else cloudRepo.observeSharedMusic(couple.id).catch { emit(emptyList()) }
+      }
+      .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
   val remoteNotifications: StateFlow<List<NotificationItemDto>> =
     activeCouple
       .flatMapLatest { couple ->
         if (couple == null) flowOf(emptyList())
         else cloudRepo.observeNotifications(couple.id).catch { emit(emptyList()) }
       }
+      .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+  val sharedReflections: StateFlow<List<SharedReflectionDto>> =
+    activeCouple
+      .flatMapLatest { couple ->
+        if (couple == null) flowOf(emptyList())
+        else cloudRepo.observeSharedReflections(couple.id).catch { emit(emptyList()) }
+      }
       .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
   val localAlbums: StateFlow<List<LocalAlbumEntity>> =
     localRepo.observeAlbums(currentUserId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+  val kenanganCollections: StateFlow<List<KenanganCollectionEntity>> =
+    localRepo.observeKenanganCollections(currentUserId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
   val localMemories: StateFlow<List<LocalMemoryEntity>> =
     localRepo.observeMemories(currentUserId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
@@ -239,14 +302,73 @@ class EvoriaViewModel(
   private val _youtubeMatchingPlaylistId = MutableStateFlow<String?>(null)
   val youtubeMatchingPlaylistId: StateFlow<String?> = _youtubeMatchingPlaylistId.asStateFlow()
 
+  private val _youtubeDirectSearchState = MutableStateFlow<YouTubeDirectSearchUiState>(YouTubeDirectSearchUiState.Idle)
+  val youtubeDirectSearchState: StateFlow<YouTubeDirectSearchUiState> = _youtubeDirectSearchState.asStateFlow()
+
+  private val _aiMemoryDraftState = MutableStateFlow<AiMemoryDraftUiState>(AiMemoryDraftUiState.Idle)
+  val aiMemoryDraftState: StateFlow<AiMemoryDraftUiState> = _aiMemoryDraftState.asStateFlow()
+
+  private val _aiReflectionState = MutableStateFlow<AiReflectionUiState>(AiReflectionUiState.Idle)
+  val aiReflectionState: StateFlow<AiReflectionUiState> = _aiReflectionState.asStateFlow()
+
   private val _localStorageLabel = MutableStateFlow("Menghitung...")
   val localStorageLabel: StateFlow<String> = _localStorageLabel.asStateFlow()
 
   init {
     refreshLocalStorageLabel()
-    // Recompute local storage label off the main thread when media-bearing tables change
+    // Enforce cold-start app lock immediately once DataStore security preferences resolve
+    viewModelScope.launch {
+      prefs.securitySettingsFlow.collect { sec ->
+        _isSecurityResolved.value = true
+        if (sec.appLockEnabled && sec.hasPinConfigured && !hasUnlockedCurrentLaunch) {
+          _isLocked.value = true
+        } else if (!sec.appLockEnabled || !sec.hasPinConfigured) {
+          _isLocked.value = false
+        }
+      }
+    }
+
+    // Dispatch system push notifications when new unread remote partner alerts arrive
+    viewModelScope.launch {
+      val seenNotifPrefs = appContext?.getSharedPreferences("evoria_pushed_notifs", Context.MODE_PRIVATE)
+      remoteNotifications.collect { items ->
+        val ctx = appContext ?: return@collect
+        val currentPrefs = userPrefs.value
+        items
+          .filter { !it.isRead && it.recipientUid == currentUserId }
+          .forEach { n ->
+            val key = "pushed_${n.id}"
+            val alreadyShown = seenNotifPrefs?.getBoolean(key, false) == true
+            if (!alreadyShown) {
+              val route =
+                when {
+                  n.kind.contains("share") -> "share_inbox"
+                  n.kind.contains("invite") || n.kind.contains("partner") -> "partner"
+                  else -> "notifications"
+                }
+              val shown =
+                EvoriaNotificationHelper.showNotificationIfEnabled(
+                  context = ctx,
+                  notificationId = n.id,
+                  kind = n.kind,
+                  title = n.title,
+                  body = n.body,
+                  prefs = currentPrefs,
+                  targetRoute = route,
+                )
+              if (shown) {
+                seenNotifPrefs?.edit()?.putBoolean(key, true)?.apply()
+              }
+            }
+          }
+      }
+    }
+
+    // Recompute local storage label off the main thread only when counts meaningfully change
     viewModelScope.launch {
       combine(localMemories, localAlbums, tracks) { m, a, t -> Triple(m.size, a.size, t.size) }
+        .distinctUntilChanged()
+        .debounce(350L)
         .collect {
           refreshLocalStorageLabel()
         }
@@ -282,30 +404,54 @@ class EvoriaViewModel(
     _bloomMessage.value = null
   }
 
+  fun suppressNextAutoLockOnce() {
+    suppressNextBackgroundLock = true
+  }
+
   fun lockNow() {
-    if (securitySettings.value.appLockEnabled) {
+    if (securitySettings.value.appLockEnabled && securitySettings.value.hasPinConfigured) {
+      hasUnlockedCurrentLaunch = false
       _isLocked.value = true
     }
   }
 
   fun unlockSucceeded() {
+    hasUnlockedCurrentLaunch = true
+    suppressNextBackgroundLock = false
     _isLocked.value = false
   }
 
   fun evaluateAutoLockOnResume() {
     val sec = securitySettings.value
     if (!sec.appLockEnabled || !sec.hasPinConfigured) return
+    if (suppressNextBackgroundLock) {
+      suppressNextBackgroundLock = false
+      return
+    }
+    if (!hasUnlockedCurrentLaunch) {
+      _isLocked.value = true
+      return
+    }
     if (sec.lastBackgroundMillis <= 0L) {
+      hasUnlockedCurrentLaunch = false
       _isLocked.value = true
       return
     }
     val elapsedSec = (System.currentTimeMillis() - sec.lastBackgroundMillis) / 1000L
-    if (elapsedSec >= sec.autoLockTimeout.seconds) {
+    if (sec.autoLockTimeout == AutoLockTimeout.IMMEDIATE || elapsedSec >= sec.autoLockTimeout.seconds) {
+      hasUnlockedCurrentLaunch = false
       _isLocked.value = true
     }
   }
 
   fun onAppBackgrounded() {
+    if (suppressNextBackgroundLock) return
+    prefs.recordBackgroundTimestampSync()
+    val sec = securitySettings.value
+    if (sec.appLockEnabled && sec.hasPinConfigured && sec.autoLockTimeout == AutoLockTimeout.IMMEDIATE) {
+      hasUnlockedCurrentLaunch = false
+      _isLocked.value = true
+    }
     viewModelScope.launch { prefs.recordBackgroundTimestamp() }
   }
 
@@ -325,6 +471,10 @@ class EvoriaViewModel(
 
   fun setAccentPreset(preset: EvoriaAccentPreset) {
     viewModelScope.launch { prefs.setAccentPreset(preset) }
+  }
+
+  fun setCustomAccentHex(colorHex: Long?) {
+    viewModelScope.launch { prefs.setCustomAccentHex(colorHex) }
   }
 
   fun setNavbarThemeStyle(style: NavbarThemeStyle) {
@@ -410,6 +560,41 @@ class EvoriaViewModel(
     }
   }
 
+  fun saveProfileBanner(uri: Uri?) {
+    if (uri == null) return
+    viewModelScope.launch {
+      val oldUri = userPrefs.value.profileBannerUri
+      val persisted = localRepo.persistMediaUri(uri).getOrNull()
+      if (persisted == null || (persisted.mediaType != "photo" && persisted.mediaType != "video")) {
+        _statusBanner.value = "Pilih file foto atau video yang valid untuk latar profil."
+        return@launch
+      }
+      prefs.setProfileBanner(persisted.localFileUri, persisted.mediaType)
+      if (!oldUri.isNullOrBlank() && oldUri != persisted.localFileUri) {
+        withContext(Dispatchers.IO) { MediaStorageHelper.deletePersistedFile(oldUri) }
+      }
+      _statusBanner.value =
+        if (persisted.mediaType == "video") "Latar video profil diperbarui." else "Latar foto profil diperbarui."
+    }
+  }
+
+  fun clearProfileBanner() {
+    viewModelScope.launch {
+      val oldUri = userPrefs.value.profileBannerUri
+      prefs.clearProfileBanner()
+      if (!oldUri.isNullOrBlank()) {
+        withContext(Dispatchers.IO) { MediaStorageHelper.deletePersistedFile(oldUri) }
+      }
+      _statusBanner.value = "Latar header profil dikembalikan ke gradien EVORIA."
+    }
+  }
+
+  private fun partnerUidOf(couple: CoupleConnectionDto): String =
+    if (couple.memberOneUid == currentUserId) couple.memberTwoUid else couple.memberOneUid
+
+  private fun currentDisplayName(): String =
+    userProfile.value?.displayName?.ifBlank { initialDisplayName } ?: initialDisplayName
+
   // --- MEMORIES & ALBUMS ---
 
   fun createOrUpdateAlbum(
@@ -454,7 +639,7 @@ class EvoriaViewModel(
         )
       }
       if (existingId == null) {
-        _bloomMessage.value = "Album \"${album.title}\" kini menjadi bagian dari ruang kalian."
+        _bloomMessage.value = "Kamu berhasil membuat album"
       } else {
         _statusBanner.value = "Album diperbarui."
       }
@@ -465,6 +650,49 @@ class EvoriaViewModel(
     viewModelScope.launch {
       localRepo.deleteAlbum(albumId)
       _statusBanner.value = "Album dihapus dari perangkat."
+    }
+  }
+
+  fun createKenanganCollection(
+    title: String,
+    description: String,
+    albumIds: List<String>,
+    visibility: String = "private",
+  ) {
+    val distinctAlbumIds = albumIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    if (distinctAlbumIds.isEmpty()) {
+      _statusBanner.value = "Pilih minimal satu album untuk digabungkan ke kenangan."
+      return
+    }
+    viewModelScope.launch {
+      val now = System.currentTimeMillis()
+      val selectedAlbums = localAlbums.value.filter { it.id in distinctAlbumIds }
+      val firstCover =
+        selectedAlbums.firstNotNullOfOrNull { it.coverUri }
+          ?: localMemories.value.firstOrNull { it.albumId in distinctAlbumIds && !it.mediaUri.isNullOrBlank() }?.mediaUri
+      val collection =
+        KenanganCollectionEntity(
+          id = "kng_${UUID.randomUUID().toString().take(12)}",
+          ownerUid = currentUserId,
+          title = title.trim().ifBlank {
+            selectedAlbums.take(2).joinToString(" & ") { it.title }.ifBlank { "Kompilasi Kenangan" }
+          },
+          description = description.trim(),
+          albumIdsCsv = distinctAlbumIds.joinToString(","),
+          coverUri = firstCover,
+          visibility = visibility,
+          createdAtMillis = now,
+          updatedAtMillis = now,
+        )
+      localRepo.saveKenanganCollection(collection)
+      _bloomMessage.value = "Kamu berhasil membuat kenangan"
+    }
+  }
+
+  fun deleteKenanganCollection(collectionId: String) {
+    viewModelScope.launch {
+      localRepo.deleteKenanganCollection(collectionId)
+      _statusBanner.value = "Kompilasi kenangan dihapus."
     }
   }
 
@@ -482,9 +710,13 @@ class EvoriaViewModel(
     viewModelScope.launch {
       val now = System.currentTimeMillis()
       var savedCount = 0
+      var photoCount = 0
+      var videoCount = 0
+      val couple = activeCouple.value
       uris.forEachIndexed { idx, uri ->
         val persisted = localRepo.persistMediaUri(uri).getOrNull() ?: return@forEachIndexed
         val memId = "mem_${UUID.randomUUID().toString().take(12)}"
+        if (persisted.mediaType == "video") videoCount++ else photoCount++
         val resolvedTitle =
           if (uris.size == 1) titlePrefix.trim().ifBlank { persisted.displayName }
           else "${titlePrefix.trim().ifBlank { "Kenangan" }} #${idx + 1}"
@@ -509,10 +741,41 @@ class EvoriaViewModel(
             syncState = if (visibility == "shared") "pending" else "local_only",
           )
         localRepo.saveMemoryAndEnqueue(entity, enqueueUploadJob = true)
+        if (visibility == "shared" && couple != null) {
+          cloudRepo.publishSharedMemory(
+            coupleId = couple.id,
+            memberUids = couple.memberUids,
+            memoryId = entity.id,
+            albumId = entity.albumId,
+            title = entity.title,
+            caption = entity.caption,
+            story = entity.story,
+            locationName = entity.locationName,
+            mediaType = entity.mediaType,
+            memoryDateMillis = entity.memoryDateMillis,
+            isFavorite = entity.isFavorite,
+            tags = entity.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+          )
+        }
         savedCount++
       }
       if (savedCount > 0) {
-        _bloomMessage.value = "$savedCount kenangan baru disimpan dengan hangat."
+        if (visibility == "shared" && couple != null) {
+          cloudRepo.sendPartnerNotification(
+            coupleId = couple.id,
+            memberUids = couple.memberUids,
+            recipientUid = partnerUidOf(couple),
+            kind = "memory",
+            title = "Kenangan Baru Dibagikan",
+            body = "${currentDisplayName()} menambahkan $savedCount kenangan ke ruang bersama.",
+          )
+        }
+        _bloomMessage.value =
+          when {
+            photoCount > 0 && videoCount > 0 -> "Kamu berhasil masukin foto & video"
+            videoCount > 0 -> "Kamu berhasil masukin video"
+            else -> "Kamu berhasil masukin foto"
+          }
       } else {
         _statusBanner.value = "Tidak ada media yang dapat dibaca dari perangkat."
       }
@@ -564,20 +827,31 @@ class EvoriaViewModel(
 
       val couple = activeCouple.value
       if (visibility == "shared" && couple != null) {
-        cloudRepo.publishSharedMemory(
-          coupleId = couple.id,
-          memberUids = couple.memberUids,
-          memoryId = entity.id,
-          albumId = entity.albumId,
-          title = entity.title,
-          caption = entity.caption,
-          story = entity.story,
-          locationName = entity.locationName,
-          mediaType = entity.mediaType,
-          memoryDateMillis = entity.memoryDateMillis,
-          isFavorite = entity.isFavorite,
-          tags = entity.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() },
-        )
+        val pubRes =
+          cloudRepo.publishSharedMemory(
+            coupleId = couple.id,
+            memberUids = couple.memberUids,
+            memoryId = entity.id,
+            albumId = entity.albumId,
+            title = entity.title,
+            caption = entity.caption,
+            story = entity.story,
+            locationName = entity.locationName,
+            mediaType = entity.mediaType,
+            memoryDateMillis = entity.memoryDateMillis,
+            isFavorite = entity.isFavorite,
+            tags = entity.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+          )
+        if (pubRes.isSuccess && existing == null) {
+          cloudRepo.sendPartnerNotification(
+            coupleId = couple.id,
+            memberUids = couple.memberUids,
+            recipientUid = partnerUidOf(couple),
+            kind = "memory",
+            title = "Cerita Kenangan Baru",
+            body = "${currentDisplayName()} membagikan \"${entity.title}\".",
+          )
+        }
       }
       if (existing == null) {
         _bloomMessage.value = "Cerita \"${entity.title}\" tersimpan."
@@ -604,9 +878,8 @@ class EvoriaViewModel(
       _statusBanner.value = "Hubungkan pasangan terlebih dahulu untuk mengirim EVORIA Share."
       return
     }
-    val partnerUid =
-      if (couple.memberOneUid == currentUserId) couple.memberTwoUid else couple.memberOneUid
-    val myName = userProfile.value?.displayName ?: initialDisplayName
+    val partnerUid = partnerUidOf(couple)
+    val myName = currentDisplayName()
     viewModelScope.launch {
       val res =
         cloudRepo.createShareRequest(
@@ -619,6 +892,16 @@ class EvoriaViewModel(
           title = memory.title,
           caption = memory.caption.ifBlank { memory.story.take(120) },
         )
+      if (res.isSuccess) {
+        cloudRepo.sendPartnerNotification(
+          coupleId = couple.id,
+          memberUids = couple.memberUids,
+          recipientUid = partnerUid,
+          kind = "share",
+          title = "Kiriman EVORIA Share Baru",
+          body = "$myName mengirimkan \"${memory.title}\" ke kotak masukmu.",
+        )
+      }
       _statusBanner.value =
         if (res.isSuccess) "Permintaan EVORIA Share dikirim ke pasangan."
         else "Gagal mengirim share: ${res.exceptionOrNull()?.localizedMessage}"
@@ -635,6 +918,14 @@ class EvoriaViewModel(
           kind = "share",
           title = "EVORIA Share diterima",
           body = "\"${request.title}\" ditambahkan ke ruang bersama.",
+        )
+        cloudRepo.sendPartnerNotification(
+          coupleId = couple.id,
+          memberUids = couple.memberUids,
+          recipientUid = request.senderUid,
+          kind = "share",
+          title = "EVORIA Share Diterima",
+          body = "${currentDisplayName()} menerima \"${request.title}\".",
         )
       }
       _statusBanner.value =
@@ -691,18 +982,100 @@ class EvoriaViewModel(
           val albOk = albumFilterId == null || mem.albumId == albumFilterId
           visOk && typeOk && albOk
         }
+      val albumTitlesById = localAlbums.value.associate { it.id to it.title }
       val outcome =
         searchEngine.searchMemories(
           query = query,
           candidates = filtered,
           allowCloudAi = userPrefs.value.aiSearchConsent,
+          albumTitlesById = albumTitlesById,
         )
+      if (outcome.discoveredTagsByMemoryId.isNotEmpty()) {
+        outcome.discoveredTagsByMemoryId.forEach { (memId, newTags) ->
+          val existingMem = localMemories.value.firstOrNull { it.id == memId }
+          if (existingMem != null) {
+            val currentTags =
+              existingMem.tagsCsv.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toMutableSet()
+            val added = newTags.map { it.trim().lowercase() }.filter { it.isNotEmpty() && currentTags.add(it) }
+            if (added.isNotEmpty()) {
+              localRepo.saveMemoryAndEnqueue(
+                existingMem.copy(tagsCsv = currentTags.take(12).joinToString(", ")),
+                enqueueUploadJob = false,
+              )
+            }
+          }
+        }
+      }
       _searchState.value = SearchUiState.Success(outcome)
     }
   }
 
   fun clearSearchHistory() {
     viewModelScope.launch { prefs.clearSearchHistory() }
+  }
+
+  fun generateAiMemoryStory(photoUri: Uri?, seedTitle: String, location: String) {
+    if (!userPrefs.value.aiSearchConsent) {
+      _aiMemoryDraftState.value =
+        AiMemoryDraftUiState.Error(
+          "Aktifkan persetujuan Gemini AI di tab Jelajah terlebih dahulu untuk merangkai cerita otomatis."
+        )
+      return
+    }
+    viewModelScope.launch {
+      _aiMemoryDraftState.value = AiMemoryDraftUiState.Loading
+      val res =
+        searchEngine.generateMemoryStorySuggestion(
+          photoUri = photoUri?.toString(),
+          seedTitle = seedTitle,
+          location = location,
+        )
+      _aiMemoryDraftState.value =
+        res.fold(
+          onSuccess = { AiMemoryDraftUiState.Success(it) },
+          onFailure = {
+            AiMemoryDraftUiState.Error(it.localizedMessage ?: "Gagal meminta draf cerita dari Gemini AI.")
+          },
+        )
+    }
+  }
+
+  fun clearAiMemoryDraftState() {
+    _aiMemoryDraftState.value = AiMemoryDraftUiState.Idle
+  }
+
+  fun generateAiReflectionInsight() {
+    if (!userPrefs.value.aiSearchConsent) {
+      _aiReflectionState.value =
+        AiReflectionUiState.Error(
+          "Aktifkan persetujuan Gemini AI di tab Jelajah agar Gemini dapat memberi pertanyaan & wawasan hangat."
+        )
+      return
+    }
+    viewModelScope.launch {
+      _aiReflectionState.value = AiReflectionUiState.Loading
+      val recentMoods =
+        moods.value.take(6).map { m ->
+          if (m.note.isNotBlank()) "${m.moodKey} (${m.note})" else m.moodKey
+        }
+      val recentSnippets =
+        journals.value
+          .filter { !it.isDraft }
+          .take(4)
+          .map { "${it.title}: ${it.body.take(120)}" }
+      val res = searchEngine.generateDailyReflectionInsight(recentMoods, recentSnippets)
+      _aiReflectionState.value =
+        res.fold(
+          onSuccess = { AiReflectionUiState.Success(it) },
+          onFailure = {
+            AiReflectionUiState.Error(it.localizedMessage ?: "Gagal memuat refleksi Gemini AI.")
+          },
+        )
+    }
+  }
+
+  fun clearAiReflectionState() {
+    _aiReflectionState.value = AiReflectionUiState.Idle
   }
 
   // --- REFLEKSI ---
@@ -719,15 +1092,18 @@ class EvoriaViewModel(
   ) {
     viewModelScope.launch {
       val now = System.currentTimeMillis()
+      val journalId = existingId ?: "jrn_${UUID.randomUUID().toString().take(12)}"
+      val cleanTitle = title.trim().ifBlank { "Catatan Hari Ini" }
+      val cleanBody = body.trim()
       val savedAttachment =
         if (attachmentUri != null) localRepo.persistMediaUri(attachmentUri).getOrNull()?.localFileUri
         else existingAttachment
       localRepo.saveJournal(
         JournalEntity(
-          id = existingId ?: "jrn_${UUID.randomUUID().toString().take(12)}",
+          id = journalId,
           ownerUid = currentUserId,
-          title = title.trim().ifBlank { "Catatan Hari Ini" },
-          body = body.trim(),
+          title = cleanTitle,
+          body = cleanBody,
           attachmentUri = savedAttachment,
           visibility = visibility,
           moodTag = moodTag,
@@ -736,12 +1112,44 @@ class EvoriaViewModel(
           updatedAtMillis = now,
         )
       )
+      val couple = activeCouple.value
+      if (couple != null) {
+        if (!isDraft && visibility == "shared") {
+          val pubRes =
+            cloudRepo.publishSharedReflection(
+              coupleId = couple.id,
+              memberUids = couple.memberUids,
+              reflectionId = journalId,
+              authorName = currentDisplayName(),
+              kind = "journal",
+              title = cleanTitle,
+              body = cleanBody,
+              unlockAtMillis = null,
+              isSealed = false,
+            )
+          if (pubRes.isSuccess && existingId == null) {
+            cloudRepo.sendPartnerNotification(
+              coupleId = couple.id,
+              memberUids = couple.memberUids,
+              recipientUid = partnerUidOf(couple),
+              kind = "reflection",
+              title = "Jurnal Bersama Baru",
+              body = "${currentDisplayName()} menulis jurnal \"$cleanTitle\".",
+            )
+          }
+        } else if (existingId != null) {
+          cloudRepo.deleteSharedReflection(couple.id, journalId)
+        }
+      }
       _statusBanner.value = if (isDraft) "Draf jurnal disimpan." else "Jurnal tersimpan."
     }
   }
 
   fun deleteJournal(id: String) {
-    viewModelScope.launch { localRepo.deleteJournal(id) }
+    viewModelScope.launch {
+      localRepo.deleteJournal(id)
+      activeCouple.value?.let { couple -> cloudRepo.deleteSharedReflection(couple.id, id) }
+    }
   }
 
   fun saveLetter(
@@ -755,12 +1163,15 @@ class EvoriaViewModel(
   ) {
     viewModelScope.launch {
       val now = System.currentTimeMillis()
+      val letterId = existingId ?: "ltr_${UUID.randomUUID().toString().take(12)}"
+      val cleanTitle = title.trim().ifBlank { "Surat untukmu" }
+      val cleanBody = body.trim()
       localRepo.saveLetter(
         LetterEntity(
-          id = existingId ?: "ltr_${UUID.randomUUID().toString().take(12)}",
+          id = letterId,
           ownerUid = currentUserId,
-          title = title.trim().ifBlank { "Surat untukmu" },
-          body = body.trim(),
+          title = cleanTitle,
+          body = cleanBody,
           recipientName = recipientName.trim().ifBlank { "Kamu" },
           isSealed = isSealed,
           isDraft = isDraft,
@@ -769,12 +1180,44 @@ class EvoriaViewModel(
           updatedAtMillis = now,
         )
       )
+      val couple = activeCouple.value
+      if (couple != null) {
+        if (!isDraft && isShared) {
+          val pubRes =
+            cloudRepo.publishSharedReflection(
+              coupleId = couple.id,
+              memberUids = couple.memberUids,
+              reflectionId = letterId,
+              authorName = currentDisplayName(),
+              kind = "letter",
+              title = cleanTitle,
+              body = cleanBody,
+              unlockAtMillis = null,
+              isSealed = isSealed,
+            )
+          if (pubRes.isSuccess && existingId == null) {
+            cloudRepo.sendPartnerNotification(
+              coupleId = couple.id,
+              memberUids = couple.memberUids,
+              recipientUid = partnerUidOf(couple),
+              kind = "reflection",
+              title = "Surat Baru Untukmu",
+              body = "${currentDisplayName()} mengirimkan surat \"$cleanTitle\".",
+            )
+          }
+        } else if (existingId != null) {
+          cloudRepo.deleteSharedReflection(couple.id, letterId)
+        }
+      }
       _statusBanner.value = if (isDraft) "Draf surat disimpan." else "Surat tersimpan dengan aman."
     }
   }
 
   fun deleteLetter(id: String) {
-    viewModelScope.launch { localRepo.deleteLetter(id) }
+    viewModelScope.launch {
+      localRepo.deleteLetter(id)
+      activeCouple.value?.let { couple -> cloudRepo.deleteSharedReflection(couple.id, id) }
+    }
   }
 
   fun recordMood(moodKey: String, note: String) {
@@ -833,6 +1276,31 @@ class EvoriaViewModel(
           createdAtMillis = System.currentTimeMillis(),
         )
       localRepo.saveTimeCapsule(capsule)
+      val couple = activeCouple.value
+      if (visibility == "shared" && couple != null) {
+        val pubRes =
+          cloudRepo.publishSharedReflection(
+            coupleId = couple.id,
+            memberUids = couple.memberUids,
+            reflectionId = capsule.id,
+            authorName = currentDisplayName(),
+            kind = "capsule",
+            title = capsule.title,
+            body = capsule.body,
+            unlockAtMillis = capsule.unlockAtMillis,
+            isSealed = true,
+          )
+        if (pubRes.isSuccess) {
+          cloudRepo.sendPartnerNotification(
+            coupleId = couple.id,
+            memberUids = couple.memberUids,
+            recipientUid = partnerUidOf(couple),
+            kind = "capsule",
+            title = "Kapsul Waktu Disegel",
+            body = "${currentDisplayName()} menyegel kapsul \"${capsule.title}\" untuk dibuka bersama.",
+          )
+        }
+      }
       _statusBanner.value = "Kapsul waktu disegel hingga tanggal buka."
     }
   }
@@ -933,12 +1401,96 @@ class EvoriaViewModel(
       _spotifyImportState.value = SpotifyImportUiState.Idle
       onImported(playlistId)
 
-      if (!YouTubeDataApiClient.isApiKeyConfigured()) {
-        _statusBanner.value =
-          "Metadata ${savedTracks.size} lagu diimpor. Atur YOUTUBE_API_KEY di panel Secrets AI Studio untuk mencocokkan lagu penuh dari YouTube."
-      } else {
+      if (savedTracks.isNotEmpty()) {
         matchTracksWithYouTubeInternal(playlistId, savedTracks)
       }
+    }
+  }
+
+  fun searchYouTubeDirect(query: String) {
+    val clean = query.trim()
+    if (clean.isEmpty()) {
+      _youtubeDirectSearchState.value = YouTubeDirectSearchUiState.Idle
+      return
+    }
+    viewModelScope.launch {
+      _youtubeDirectSearchState.value = YouTubeDirectSearchUiState.Loading
+      val res = YouTubeDataApiClient.searchTracks(clean, maxResults = 12)
+      res
+        .onSuccess { list ->
+          _youtubeDirectSearchState.value = YouTubeDirectSearchUiState.Success(clean, list)
+        }
+        .onFailure { err ->
+          _youtubeDirectSearchState.value =
+            YouTubeDirectSearchUiState.Error(
+              err.localizedMessage ?: "Gagal mencari lagu di YouTube. Periksa koneksi internet."
+            )
+        }
+    }
+  }
+
+  fun clearYouTubeDirectSearch() {
+    _youtubeDirectSearchState.value = YouTubeDirectSearchUiState.Idle
+  }
+
+  fun playYouTubeMatchDirectly(
+    match: YouTubeTrackMatch,
+    preferredPlaylistId: String? = null,
+    onReadyToOpenPlayer: () -> Unit = {},
+  ) {
+    viewModelScope.launch {
+      val existingTrack = tracks.value.firstOrNull { it.youtubeVideoId == match.videoId }
+      if (existingTrack != null) {
+        val queue =
+          tracks.value
+            .filter { it.playlistId == existingTrack.playlistId }
+            .sortedBy { it.sortOrder }
+            .ifEmpty { listOf(existingTrack) }
+        playerManager.setQueueAndPlay(queue, existingTrack.id)
+        prefs.savePlaybackState(existingTrack.id, 0L)
+        onReadyToOpenPlayer()
+        return@launch
+      }
+
+      val targetPlaylistId =
+        preferredPlaylistId?.takeIf { id -> playlists.value.any { it.id == id } }
+          ?: playlists.value.firstOrNull { it.id == "pl_yt_direct" }?.id
+          ?: run {
+            val createdId = "pl_yt_direct"
+            localRepo.savePlaylist(
+              PlaylistEntity(
+                id = createdId,
+                title = "Lagu YouTube",
+                subtitle = "Putar langsung dari pencarian YouTube",
+                linkedAlbumId = null,
+                createdAtMillis = System.currentTimeMillis(),
+                sourceType = "youtube",
+              )
+            )
+            createdId
+          }
+
+      val currentQueue = tracks.value.filter { it.playlistId == targetPlaylistId }.sortedBy { it.sortOrder }
+      val newTrack =
+        TrackEntity(
+          id = "trk_yt_${UUID.randomUUID().toString().take(10)}",
+          playlistId = targetPlaylistId,
+          title = match.title,
+          artist = match.channelTitle.ifBlank { "YouTube Audio" },
+          mediaUri = "",
+          durationMs = match.durationMs,
+          sortOrder = currentQueue.size,
+          linkedMemoryId = null,
+          sourceType = "youtube",
+          externalUrl = "https://www.youtube.com/watch?v=${match.videoId}",
+          coverUrl = YouTubeDataApiClient.thumbnailUrl(match.videoId),
+          youtubeVideoId = match.videoId,
+        )
+      localRepo.saveTrack(newTrack)
+      val updatedQueue = currentQueue + newTrack
+      playerManager.setQueueAndPlay(updatedQueue, newTrack.id)
+      prefs.savePlaybackState(newTrack.id, 0L)
+      onReadyToOpenPlayer()
     }
   }
 
@@ -946,25 +1498,19 @@ class EvoriaViewModel(
     val playlistTracks = tracks.value.filter { it.playlistId == playlistId }.sortedBy { it.sortOrder }
     if (playlistTracks.isEmpty()) return
     viewModelScope.launch {
-      if (!YouTubeDataApiClient.isApiKeyConfigured()) {
-        _statusBanner.value =
-          "YOUTUBE_API_KEY belum diisi di panel Secrets AI Studio. Tambahkan API key agar pencarian lagu penuh YouTube aktif."
-        return@launch
-      }
       matchTracksWithYouTubeInternal(playlistId, playlistTracks)
     }
   }
 
-  fun matchSingleTrackWithYouTube(track: TrackEntity) {
+  fun matchSingleTrackWithYouTube(
+    track: TrackEntity,
+    playImmediately: Boolean = true,
+    onReadyToOpenPlayer: () -> Unit = {},
+  ) {
     viewModelScope.launch {
-      if (!YouTubeDataApiClient.isApiKeyConfigured()) {
-        _statusBanner.value =
-          "YOUTUBE_API_KEY belum diisi di panel Secrets AI Studio."
-        return@launch
-      }
       _youtubeMatchingPlaylistId.value = track.playlistId
       val result =
-        YouTubeDataApiClient.searchFullTrack(
+        YouTubeDataApiClient.searchBestPlayableTrack(
           title = track.title,
           artist = track.artist,
           targetDurationMs = track.durationMs,
@@ -975,20 +1521,33 @@ class EvoriaViewModel(
           val updated =
             track.copy(
               youtubeVideoId = result.match.videoId,
+              coverUrl = track.coverUrl ?: YouTubeDataApiClient.thumbnailUrl(result.match.videoId),
               durationMs = if (track.durationMs > 0L) track.durationMs else result.match.durationMs,
             )
           localRepo.saveTrack(updated)
-          playerManager.refreshTrackInQueue(updated)
-          _statusBanner.value = "Lagu penuh YouTube ditemukan: \"${result.match.title}\"."
+          if (playImmediately) {
+            val queue =
+              tracks.value
+                .filter { it.playlistId == updated.playlistId }
+                .sortedBy { it.sortOrder }
+                .map { if (it.id == updated.id) updated else it }
+                .ifEmpty { listOf(updated) }
+            playerManager.setQueueAndPlay(queue, updated.id)
+            prefs.savePlaybackState(updated.id, 0L)
+            onReadyToOpenPlayer()
+          } else {
+            playerManager.refreshTrackInQueue(updated)
+            _statusBanner.value = "Lagu penuh YouTube ditemukan: \"${result.match.title}\"."
+          }
         }
         is YouTubeSearchResult.ApiError -> {
-          _statusBanner.value = "YouTube API error (${result.statusCode}): ${result.message}"
+          _statusBanner.value = "YouTube error (${result.statusCode}): ${result.message}"
         }
         is YouTubeSearchResult.NotFound -> {
           _statusBanner.value = "Tidak menemukan hasil yang cocok untuk \"${track.title}\" di YouTube."
         }
         YouTubeSearchResult.MissingApiKey -> {
-          _statusBanner.value = "YOUTUBE_API_KEY belum dikonfigurasi."
+          _statusBanner.value = "Tidak dapat mencari lagu di YouTube."
         }
       }
     }
@@ -998,6 +1557,7 @@ class EvoriaViewModel(
     playlistId: String,
     tracksToProcess: List<TrackEntity>,
   ) {
+    if (_youtubeMatchingPlaylistId.value == playlistId) return
     val unmatched = tracksToProcess.filter { it.youtubeVideoId.isNullOrBlank() }
     if (unmatched.isEmpty()) {
       _statusBanner.value = "Semua lagu di playlist sudah terhubung dengan YouTube."
@@ -1005,17 +1565,16 @@ class EvoriaViewModel(
     }
     _youtubeMatchingPlaylistId.value = playlistId
     var matchedCount = 0
-    var fatalError: String? = null
+    var lastError: String? = null
     try {
       coroutineScope {
-        for (chunk in unmatched.take(50).chunked(3)) {
-          if (fatalError != null) break
+        for (chunk in unmatched.take(50).chunked(4)) {
           val outcomes =
             chunk
               .map { track ->
                 async {
                   track to
-                    YouTubeDataApiClient.searchFullTrack(
+                    YouTubeDataApiClient.searchBestPlayableTrack(
                       title = track.title,
                       artist = track.artist,
                       targetDurationMs = track.durationMs,
@@ -1029,20 +1588,22 @@ class EvoriaViewModel(
                 val updated =
                   track.copy(
                     youtubeVideoId = res.match.videoId,
+                    coverUrl = track.coverUrl ?: YouTubeDataApiClient.thumbnailUrl(res.match.videoId),
                     durationMs = if (track.durationMs > 0L) track.durationMs else res.match.durationMs,
                   )
                 localRepo.saveTrack(updated)
-                playerManager.refreshTrackInQueue(updated)
+                val playerSnapshot = playerManager.state.value
+                if (playerSnapshot.currentTrack?.id == updated.id || playerSnapshot.queue.any { it.id == updated.id }) {
+                  playerManager.refreshTrackInQueue(updated)
+                }
                 matchedCount++
               }
               is YouTubeSearchResult.ApiError -> {
-                if (fatalError == null) {
-                  fatalError = "YouTube API (${res.statusCode}): ${res.message}"
+                if (lastError == null) {
+                  lastError = "YouTube (${res.statusCode}): ${res.message}"
                 }
               }
-              is YouTubeSearchResult.MissingApiKey -> {
-                fatalError = "YOUTUBE_API_KEY belum diisi di panel Secrets AI Studio."
-              }
+              is YouTubeSearchResult.MissingApiKey -> Unit
               is YouTubeSearchResult.NotFound -> Unit
             }
           }
@@ -1053,12 +1614,11 @@ class EvoriaViewModel(
     }
     _statusBanner.value =
       when {
-        fatalError != null && matchedCount == 0 -> fatalError
-        fatalError != null -> "Dicocokkan $matchedCount lagu YouTube sebelum terhenti: $fatalError"
         matchedCount > 0 ->
-          "Diimpor & dicocokkan $matchedCount dari ${unmatched.size} lagu penuh via YouTube Data API."
+          "Dicocokkan $matchedCount dari ${unmatched.size} lagu dari YouTube."
+        lastError != null -> lastError
         else ->
-          "Metadata diimpor, namun belum ada lagu yang cocok otomatis di YouTube Data API."
+          "Belum menemukan video YouTube yang cocok untuk lagu di playlist ini."
       }
   }
 
@@ -1128,8 +1688,213 @@ class EvoriaViewModel(
   }
 
   fun playPlaylistTrack(playlistTracks: List<TrackEntity>, trackId: String) {
+    val target = playlistTracks.firstOrNull { it.id == trackId } ?: playlistTracks.firstOrNull()
+    val hasLocalFile = target != null && target.mediaUri.isNotBlank() && !target.mediaUri.startsWith("http")
+    val hasYouTube = target != null && !target.youtubeVideoId.isNullOrBlank()
+    if (target != null && target.sourceType == "spotify" && !hasLocalFile && !hasYouTube) {
+      matchSingleTrackWithYouTube(target, playImmediately = true)
+      return
+    }
     playerManager.setQueueAndPlay(playlistTracks, trackId)
     viewModelScope.launch { prefs.savePlaybackState(trackId, 0L) }
+  }
+
+  fun playNextTrack() {
+    val curState = playerState.value
+    val q = curState.queue
+    val cur = curState.currentTrack ?: return
+    if (q.isEmpty()) return
+    val idx = q.indexOfFirst { it.id == cur.id }
+    val nextTrack = q[(idx + 1).mod(q.size)]
+    val latestNext = tracks.value.firstOrNull { it.id == nextTrack.id } ?: nextTrack
+    val updatedQueue = q.map { candidate -> tracks.value.firstOrNull { it.id == candidate.id } ?: candidate }
+    playPlaylistTrack(updatedQueue, latestNext.id)
+  }
+
+  fun playPreviousTrack() {
+    val curState = playerState.value
+    val q = curState.queue
+    val cur = curState.currentTrack ?: return
+    if (q.isEmpty()) return
+    val idx = q.indexOfFirst { it.id == cur.id }
+    val prevTrack = q[(idx - 1).mod(q.size)]
+    val latestPrev = tracks.value.firstOrNull { it.id == prevTrack.id } ?: prevTrack
+    val updatedQueue = q.map { candidate -> tracks.value.firstOrNull { it.id == candidate.id } ?: candidate }
+    playPlaylistTrack(updatedQueue, latestPrev.id)
+  }
+
+  fun sendTrackToPartner(track: TrackEntity) {
+    val couple = activeCouple.value
+    if (couple == null) {
+      _statusBanner.value = "Hubungkan pasangan terlebih dahulu untuk mengirim lagu."
+      return
+    }
+    val items =
+      listOf(
+        SharedMusicTrackItem(
+          title = track.title,
+          artist = track.artist,
+          durationMs = track.durationMs,
+          sourceType = track.sourceType,
+          externalUrl = track.externalUrl,
+          coverUrl = track.coverUrl,
+          youtubeVideoId = track.youtubeVideoId,
+        )
+      )
+    val partnerUid = partnerUidOf(couple)
+    val myName = currentDisplayName()
+    viewModelScope.launch {
+      val res =
+        cloudRepo.sendSharedMusic(
+          coupleId = couple.id,
+          memberUids = couple.memberUids,
+          senderName = myName,
+          recipientUid = partnerUid,
+          kind = "track",
+          title = track.title,
+          subtitle = track.artist.ifBlank { "Lagu pilihan" },
+          externalUrl = track.externalUrl,
+          coverUrl = track.coverUrl,
+          tracksJson = musicShareJson.encodeToString(items),
+        )
+      if (res.isSuccess) {
+        cloudRepo.sendPartnerNotification(
+          coupleId = couple.id,
+          memberUids = couple.memberUids,
+          recipientUid = partnerUid,
+          kind = "share",
+          title = "Lagu Dikirim Untukmu",
+          body = "$myName mengirimkan lagu \"${track.title}\".",
+        )
+      }
+      _statusBanner.value =
+        if (res.isSuccess) "Lagu \"${track.title}\" dikirim ke pasangan."
+        else "Gagal mengirim lagu: ${res.exceptionOrNull()?.localizedMessage}"
+    }
+  }
+
+  fun sendPlaylistToPartner(playlist: PlaylistEntity, playlistTracks: List<TrackEntity>) {
+    val couple = activeCouple.value
+    if (couple == null) {
+      _statusBanner.value = "Hubungkan pasangan terlebih dahulu untuk mengirim playlist."
+      return
+    }
+    if (playlistTracks.isEmpty()) {
+      _statusBanner.value = "Tambahkan minimal satu lagu ke playlist sebelum mengirim."
+      return
+    }
+    val items =
+      playlistTracks.take(40).map { t ->
+        SharedMusicTrackItem(
+          title = t.title,
+          artist = t.artist,
+          durationMs = t.durationMs,
+          sourceType = t.sourceType,
+          externalUrl = t.externalUrl,
+          coverUrl = t.coverUrl,
+          youtubeVideoId = t.youtubeVideoId,
+        )
+      }
+    val partnerUid = partnerUidOf(couple)
+    val myName = currentDisplayName()
+    viewModelScope.launch {
+      val res =
+        cloudRepo.sendSharedMusic(
+          coupleId = couple.id,
+          memberUids = couple.memberUids,
+          senderName = myName,
+          recipientUid = partnerUid,
+          kind = "playlist",
+          title = playlist.title,
+          subtitle = playlist.subtitle.ifBlank { "${items.size} lagu dari $myName" },
+          externalUrl = playlist.externalUrl,
+          coverUrl = playlist.coverUrl,
+          tracksJson = musicShareJson.encodeToString(items),
+        )
+      if (res.isSuccess) {
+        cloudRepo.sendPartnerNotification(
+          coupleId = couple.id,
+          memberUids = couple.memberUids,
+          recipientUid = partnerUid,
+          kind = "share",
+          title = "Playlist Baru Untukmu",
+          body = "$myName membagikan playlist \"${playlist.title}\" (${items.size} lagu).",
+        )
+      }
+      _statusBanner.value =
+        if (res.isSuccess) "Playlist \"${playlist.title}\" dikirim ke pasangan."
+        else "Gagal mengirim playlist: ${res.exceptionOrNull()?.localizedMessage}"
+    }
+  }
+
+  fun respondSharedMusic(
+    share: SharedMusicDto,
+    accept: Boolean,
+    playImmediately: Boolean = false,
+  ) {
+    val couple = activeCouple.value ?: return
+    viewModelScope.launch {
+      val newStatus = if (accept) "accepted" else "declined"
+      val res = cloudRepo.respondToSharedMusic(couple.id, share.id, newStatus)
+      if (res.isSuccess && accept) {
+        val parsedTracks =
+          runCatching { musicShareJson.decodeFromString<List<SharedMusicTrackItem>>(share.tracksJson) }
+            .getOrDefault(emptyList())
+        if (parsedTracks.isNotEmpty()) {
+          val now = System.currentTimeMillis()
+          val playlistId = "pl_shared_${share.id}"
+          val playlist =
+            PlaylistEntity(
+              id = playlistId,
+              title =
+                if (share.kind == "track") "Kiriman ${share.senderName}: ${share.title}"
+                else share.title,
+              subtitle = "Dari ${share.senderName} • ${parsedTracks.size} lagu",
+              createdAtMillis = now,
+              sourceType = parsedTracks.first().sourceType,
+              externalUrl = share.externalUrl,
+              coverUrl = share.coverUrl,
+            )
+          localRepo.savePlaylist(playlist)
+          val savedTracks =
+            parsedTracks.mapIndexed { idx, item ->
+              val trk =
+                TrackEntity(
+                  id = "trk_${share.id}_$idx",
+                  playlistId = playlistId,
+                  title = item.title,
+                  artist = item.artist,
+                  mediaUri = "",
+                  durationMs = item.durationMs,
+                  sortOrder = idx,
+                  sourceType = item.sourceType,
+                  externalUrl = item.externalUrl,
+                  coverUrl = item.coverUrl,
+                  youtubeVideoId = item.youtubeVideoId,
+                )
+              localRepo.saveTrack(trk)
+              trk
+            }
+          if (playImmediately && savedTracks.isNotEmpty()) {
+            playPlaylistTrack(savedTracks, savedTracks.first().id)
+          }
+        }
+        cloudRepo.sendPartnerNotification(
+          coupleId = couple.id,
+          memberUids = couple.memberUids,
+          recipientUid = share.senderUid,
+          kind = "share",
+          title = "Kiriman Musik Diterima",
+          body = "${currentDisplayName()} menyimpan \"${share.title}\" ke koleksi musiknya.",
+        )
+      }
+      _statusBanner.value =
+        when {
+          res.isFailure -> "Gagal memproses kiriman musik: ${res.exceptionOrNull()?.localizedMessage}"
+          accept -> "Musik dari pasangan disimpan ke daftar playlist."
+          else -> "Kiriman musik ditolak."
+        }
+    }
   }
 
   // --- COUPLE CONNECTION & INVITATION CODES ---
@@ -1307,6 +2072,11 @@ class EvoriaViewModel(
 
   fun clearAllLocalData() {
     viewModelScope.launch {
+      val oldBanner = userPrefs.value.profileBannerUri
+      prefs.clearProfileBanner()
+      if (!oldBanner.isNullOrBlank()) {
+        withContext(Dispatchers.IO) { MediaStorageHelper.deletePersistedFile(oldBanner) }
+      }
       localRepo.clearAllUserLocalData(currentUserId)
       refreshLocalStorageLabel()
       _statusBanner.value = "Semua data lokal di perangkat ini telah dihapus."
@@ -1314,7 +2084,17 @@ class EvoriaViewModel(
   }
 
   fun markAllNotificationsRead() {
-    viewModelScope.launch { localRepo.markAllNotificationsRead() }
+    viewModelScope.launch {
+      localRepo.markAllNotificationsRead()
+      val couple = activeCouple.value ?: return@launch
+      val unreadRemoteIds =
+        remoteNotifications.value
+          .filter { !it.isRead && it.recipientUid == currentUserId }
+          .map { it.id }
+      if (unreadRemoteIds.isNotEmpty()) {
+        cloudRepo.markRemoteNotificationsRead(couple.id, unreadRemoteIds)
+      }
+    }
   }
 
   fun getLocalStorageLabel(): String = _localStorageLabel.value

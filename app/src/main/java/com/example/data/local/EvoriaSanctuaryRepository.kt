@@ -6,7 +6,9 @@ import com.example.util.MediaStorageHelper
 import com.example.util.PersistedMedia
 import com.example.worker.UploadQueueWorker
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -71,10 +73,21 @@ data class BackupCapsuleJson(
 )
 
 @Serializable
+data class BackupKenanganJson(
+  val id: String,
+  val title: String,
+  val description: String,
+  val albumIdsCsv: String,
+  val visibility: String,
+  val createdAtMillis: Long,
+)
+
+@Serializable
 data class EvoriaBackupPayload(
   val version: Int = 1,
   val exportedAtMillis: Long,
   val albums: List<BackupAlbumJson>,
+  val kenanganCollections: List<BackupKenanganJson> = emptyList(),
   val memories: List<BackupMemoryJson>,
   val journals: List<BackupJournalJson>,
   val letters: List<BackupLetterJson>,
@@ -88,6 +101,9 @@ class EvoriaSanctuaryRepository(
   private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
 
   fun observeAlbums(uid: String): Flow<List<LocalAlbumEntity>> = dao.observeAlbums(uid)
+
+  fun observeKenanganCollections(uid: String): Flow<List<KenanganCollectionEntity>> =
+    dao.observeKenanganCollections(uid)
 
   fun observeMemories(uid: String): Flow<List<LocalMemoryEntity>> = dao.observeMemories(uid)
 
@@ -114,7 +130,9 @@ class EvoriaSanctuaryRepository(
   fun observeSyncCheckpoint(): Flow<SyncCheckpointEntity?> = dao.observeSyncCheckpoint()
 
   suspend fun persistMediaUri(uri: Uri): Result<PersistedMedia> =
-    MediaStorageHelper.persistUriToAppStorage(context, uri)
+    withContext(Dispatchers.IO) {
+      MediaStorageHelper.persistUriToAppStorage(context, uri)
+    }
 
   fun resolveDisplayName(uri: Uri): String =
     MediaStorageHelper.queryDisplayName(context, uri)
@@ -128,6 +146,14 @@ class EvoriaSanctuaryRepository(
 
   suspend fun deleteAlbum(albumId: String) {
     dao.deleteAlbum(albumId)
+  }
+
+  suspend fun saveKenanganCollection(collection: KenanganCollectionEntity) {
+    dao.upsertKenanganCollection(collection)
+  }
+
+  suspend fun deleteKenanganCollection(collectionId: String) {
+    dao.deleteKenanganCollection(collectionId)
   }
 
   suspend fun saveMemoryAndEnqueue(
@@ -177,7 +203,9 @@ class EvoriaSanctuaryRepository(
   }
 
   suspend fun deleteMemory(memory: LocalMemoryEntity) {
-    MediaStorageHelper.deletePersistedFile(memory.mediaUri)
+    withContext(Dispatchers.IO) {
+      MediaStorageHelper.deletePersistedFile(memory.mediaUri)
+    }
     dao.deleteMemory(memory.id)
   }
 
@@ -248,8 +276,9 @@ class EvoriaSanctuaryRepository(
     dao.upsertSyncCheckpoint(current)
   }
 
-  suspend fun exportBackupJson(uid: String): String {
+  suspend fun exportBackupJson(uid: String): String = withContext(Dispatchers.IO) {
     val albums = dao.getAlbumsSnapshot(uid)
+    val kenanganCollections = dao.getKenanganCollectionsSnapshot(uid)
     val memories = dao.getMemoriesSnapshot(uid)
     val journals = dao.getJournalsSnapshot(uid)
     val letters = dao.getLettersSnapshot(uid)
@@ -265,6 +294,17 @@ class EvoriaSanctuaryRepository(
               description = it.description,
               visibility = it.visibility,
               soundtrackTitle = it.soundtrackTitle,
+              createdAtMillis = it.createdAtMillis,
+            )
+          },
+        kenanganCollections =
+          kenanganCollections.map {
+            BackupKenanganJson(
+              id = it.id,
+              title = it.title,
+              description = it.description,
+              albumIdsCsv = it.albumIdsCsv,
+              visibility = it.visibility,
               createdAtMillis = it.createdAtMillis,
             )
           },
@@ -322,11 +362,12 @@ class EvoriaSanctuaryRepository(
             )
           },
       )
-    return json.encodeToString(payload)
+    json.encodeToString(payload)
   }
 
-  suspend fun restoreBackupJson(uid: String, rawJson: String): Result<Int> = runCatching {
-    val payload = json.decodeFromString<EvoriaBackupPayload>(rawJson)
+  suspend fun restoreBackupJson(uid: String, rawJson: String): Result<Int> = withContext(Dispatchers.IO) {
+    runCatching {
+      val payload = json.decodeFromString<EvoriaBackupPayload>(rawJson)
     var restored = 0
     val now = System.currentTimeMillis()
     payload.albums.forEach {
@@ -338,6 +379,21 @@ class EvoriaSanctuaryRepository(
           description = it.description,
           visibility = it.visibility,
           soundtrackTitle = it.soundtrackTitle,
+          createdAtMillis = it.createdAtMillis,
+          updatedAtMillis = now,
+        )
+      )
+      restored++
+    }
+    payload.kenanganCollections.forEach {
+      dao.upsertKenanganCollection(
+        KenanganCollectionEntity(
+          id = it.id,
+          ownerUid = uid,
+          title = it.title,
+          description = it.description,
+          albumIdsCsv = it.albumIdsCsv,
+          visibility = it.visibility,
           createdAtMillis = it.createdAtMillis,
           updatedAtMillis = now,
         )
@@ -414,10 +470,11 @@ class EvoriaSanctuaryRepository(
       )
       restored++
     }
-    restored
+      restored
+    }
   }
 
-  suspend fun clearAllUserLocalData(uid: String) {
+  suspend fun clearAllUserLocalData(uid: String) = withContext(Dispatchers.IO) {
     val albums = dao.getAlbumsSnapshot(uid)
     val memories = dao.getMemoriesSnapshot(uid)
     val journals = dao.getJournalsSnapshot(uid)
@@ -427,6 +484,7 @@ class EvoriaSanctuaryRepository(
     journals.forEach { MediaStorageHelper.deletePersistedFile(it.attachmentUri) }
     capsules.forEach { MediaStorageHelper.deletePersistedFile(it.attachmentUri) }
     dao.clearUserAlbums(uid)
+    dao.clearUserKenanganCollections(uid)
     dao.clearUserMemories(uid)
     dao.clearUserJournals(uid)
     dao.clearUserLetters(uid)

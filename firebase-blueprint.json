@@ -109,6 +109,27 @@
       },
       "required": ["senderUid", "senderName", "recipientUid", "memberUids", "title", "status", "createdAt", "updatedAt"]
     },
+    "SharedMusic": {
+      "title": "SharedMusic",
+      "description": "Shared track or playlist sent between the connected couple.",
+      "type": "object",
+      "properties": {
+        "senderUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "recipientUid": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "kind": { "type": "string", "enum": ["track", "playlist"] },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "externalUrl": { "type": "string" },
+        "coverUrl": { "type": "string" },
+        "tracksJson": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined", "revoked"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderUid", "senderName", "recipientUid", "memberUids", "kind", "title", "tracksJson", "status", "createdAt", "updatedAt"]
+    },
     "SharedReflection": {
       "title": "SharedReflection",
       "description": "Explicitly shared journal, letter, or sealed time capsule.",
@@ -189,6 +210,10 @@
     "/couples/{coupleId}/share_requests/{requestId}": {
       "schema": { "$ref": "#/entities/SharedContentRequest" },
       "description": "Pending and resolved EVORIA Share requests."
+    },
+    "/couples/{coupleId}/shared_music/{musicShareId}": {
+      "schema": { "$ref": "#/entities/SharedMusic" },
+      "description": "Shared playlists and tracks sent between connected couple members."
     },
     "/couples/{coupleId}/shared_reflections/{reflectionId}": {
       "schema": { "$ref": "#/entities/SharedReflection" },

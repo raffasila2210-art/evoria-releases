@@ -14,7 +14,9 @@ import com.google.firebase.ai.type.generationConfig
 import java.io.File
 import java.util.Calendar
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 
@@ -24,6 +26,18 @@ data class SearchOutcome(
   val explanation: String,
   val isFallbackNotice: String? = null,
   val detectedTags: List<String> = emptyList(),
+)
+
+data class AiMemoryStoryDraft(
+  val title: String,
+  val caption: String,
+  val story: String,
+  val tagsCsv: String,
+)
+
+data class AiReflectionInsight(
+  val promptQuestion: String,
+  val warmInsight: String,
 )
 
 interface JelajahSearchRepository {
@@ -73,6 +87,59 @@ class EvoriaSearchEngine(
     )
   }
 
+  private val storyDraftSchema =
+    Schema.obj(
+      properties =
+        mapOf(
+          "title" to Schema.string(description = "Judul kenangan singkat dan puitis dalam Bahasa Indonesia (maks 8 kata)."),
+          "caption" to Schema.string(description = "Caption hangat 1 kalimat untuk kenangan tersebut."),
+          "story" to Schema.string(description = "Narasi cerita 2-3 kalimat yang hangat dan personal dalam Bahasa Indonesia."),
+          "tags" to
+            Schema.array(
+              items = Schema.string(),
+              description = "3 sampai 5 kata kunci pencarian relevan dalam huruf kecil.",
+            ),
+        ),
+      optionalProperties = listOf("tags"),
+    )
+
+  private val storyDraftModel by lazy {
+    Firebase.ai.generativeModel(
+      modelName = "gemini-3.8-flash",
+      generationConfig =
+        generationConfig {
+          responseMimeType = "application/json"
+          responseSchema = storyDraftSchema
+        },
+    )
+  }
+
+  private val reflectionSchema =
+    Schema.obj(
+      properties =
+        mapOf(
+          "promptQuestion" to
+            Schema.string(
+              description = "Satu pertanyaan refleksi baru yang mendalam dan hangat untuk pasangan dalam Bahasa Indonesia.",
+            ),
+          "warmInsight" to
+            Schema.string(
+              description = "Satu paragraf singkat (2 kalimat) apresiasi atau wawasan emosional yang menenangkan berdasarkan catatan terbaru.",
+            ),
+        ),
+    )
+
+  private val reflectionModel by lazy {
+    Firebase.ai.generativeModel(
+      modelName = "gemini-3.8-flash",
+      generationConfig =
+        generationConfig {
+          responseMimeType = "application/json"
+          responseSchema = reflectionSchema
+        },
+    )
+  }
+
   override suspend fun searchMemories(
     query: String,
     candidates: List<LocalMemoryEntity>,
@@ -88,7 +155,7 @@ class EvoriaSearchEngine(
     }
 
     if (!allowCloudAi || candidates.isEmpty()) {
-      val localMatches = localMetadataSearch(trimmed, candidates)
+      val localMatches = withContext(Dispatchers.Default) { localMetadataSearch(trimmed, candidates) }
       val notice =
         if (!allowCloudAi) {
           "Mode Pencarian Lokal Aktif — Pencarian visual AI Gemini dapat diaktifkan pada kartu privasi di atas."
@@ -110,16 +177,18 @@ class EvoriaSearchEngine(
         "- id=${m.id} | judul=${m.title} | caption=${m.caption} | lokasi=${m.locationName} | tag=${m.tagsCsv} | tipe=${m.mediaType} | favorit=${m.isFavorite}"
       }
 
-    // Attach lightweight downsampled thumbnails (max 384px edge, up to 10 photos) so Gemini performs true Google Photos-style visual search
+    // Attach lightweight downsampled thumbnails (max 384px edge, up to 10 photos) off the main thread
     val thumbnailPairs: List<Pair<String, Bitmap>> =
       if (appContext != null) {
-        recentCandidates
-          .filter { !it.mediaUri.isNullOrBlank() && it.mediaType.lowercase() != "video" }
-          .take(MAX_MULTIMODAL_IMAGES)
-          .mapNotNull { mem ->
-            val bmp = decodeSampledThumbnail(mem.mediaUri)
-            if (bmp != null) mem.id to bmp else null
-          }
+        withContext(Dispatchers.IO) {
+          recentCandidates
+            .filter { !it.mediaUri.isNullOrBlank() && it.mediaType.lowercase() != "video" }
+            .take(MAX_MULTIMODAL_IMAGES)
+            .mapNotNull { mem ->
+              val bmp = decodeSampledThumbnail(mem.mediaUri)
+              if (bmp != null) mem.id to bmp else null
+            }
+        }
       } else {
         emptyList()
       }
@@ -188,7 +257,7 @@ class EvoriaSearchEngine(
       )
     } catch (e: TimeoutCancellationException) {
       Log.w(TAG, "AI search timeout, falling back to local search", e)
-      val local = localMetadataSearch(trimmed, candidates)
+      val local = withContext(Dispatchers.Default) { localMetadataSearch(trimmed, candidates) }
       SearchOutcome(
         matchingMemoryIds = local,
         usedCloudAi = false,
@@ -199,7 +268,7 @@ class EvoriaSearchEngine(
       throw e
     } catch (e: Exception) {
       Log.e(TAG, "AI search failed, using local metadata fallback", e)
-      val local = localMetadataSearch(trimmed, candidates)
+      val local = withContext(Dispatchers.Default) { localMetadataSearch(trimmed, candidates) }
       SearchOutcome(
         matchingMemoryIds = local,
         usedCloudAi = false,
@@ -210,6 +279,131 @@ class EvoriaSearchEngine(
       thumbnailPairs.forEach { (_, bmp) ->
         if (!bmp.isRecycled) bmp.recycle()
       }
+    }
+  }
+
+  suspend fun generateMemoryStorySuggestion(
+    photoUri: String?,
+    seedTitle: String,
+    location: String,
+  ): Result<AiMemoryStoryDraft> {
+    val bmp: Bitmap? =
+      if (!photoUri.isNullOrBlank()) {
+        withContext(Dispatchers.IO) { decodeSampledThumbnail(photoUri, maxEdgePx = 512) }
+      } else {
+        null
+      }
+
+    val contextHints =
+      buildList {
+        if (seedTitle.isNotBlank()) add("Ide judul awal: \"${seedTitle.trim()}\"")
+        if (location.isNotBlank()) add("Lokasi: \"${location.trim()}\"")
+      }.joinToString(". ")
+
+    val promptText =
+      """
+      Kamu membantu pengguna aplikasi album kenangan privat EVORIA merangkai judul, caption, cerita hangat, dan tag pencarian dalam Bahasa Indonesia.
+      Nada tulisan harus natural, tulus, puitis secukupnya (tidak berlebihan/klise).
+      ${if (contextHints.isNotBlank()) "Petunjuk pengguna: $contextHints." else "Buat berdasarkan suasana visual foto atau momen berdua yang hangat."}
+      """.trimIndent()
+
+    val requestContent =
+      content {
+        text(promptText)
+        if (bmp != null) {
+          image(bmp)
+        }
+      }
+
+    return try {
+      val response = withTimeout(60_000L) { storyDraftModel.generateContent(requestContent) }
+      val raw = response.text ?: throw IllegalStateException("Respons Gemini AI kosong.")
+      val json = JSONObject(raw)
+      val title = json.optString("title").trim().ifBlank { seedTitle.ifBlank { "Momen Berdua" } }
+      val caption = json.optString("caption").trim()
+      val story = json.optString("story").trim()
+      val tagsArr = json.optJSONArray("tags")
+      val tags =
+        buildList {
+          if (tagsArr != null) {
+            for (i in 0 until tagsArr.length()) {
+              val tag = tagsArr.optString(i).trim().lowercase()
+              if (tag.isNotBlank() && tag !in this) add(tag)
+            }
+          }
+        }.take(5)
+      if (caption.isBlank() && story.isBlank()) {
+        Result.failure(IllegalStateException("Gemini AI tidak mengembalikan draf cerita yang valid."))
+      } else {
+        Result.success(
+          AiMemoryStoryDraft(
+            title = title,
+            caption = caption,
+            story = story,
+            tagsCsv = tags.joinToString(", "),
+          )
+        )
+      }
+    } catch (e: TimeoutCancellationException) {
+      Log.w(TAG, "AI story suggestion timed out", e)
+      Result.failure(IllegalStateException("Permintaan Gemini AI habis waktu. Coba lagi saat koneksi stabil."))
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.e(TAG, "AI story suggestion failed", e)
+      Result.failure(
+        IllegalStateException(
+          "Gagal membuat draf cerita AI: ${e.localizedMessage ?: "gangguan layanan Firebase AI Logic."}"
+        )
+      )
+    } finally {
+      if (bmp != null && !bmp.isRecycled) bmp.recycle()
+    }
+  }
+
+  suspend fun generateDailyReflectionInsight(
+    recentMoods: List<String>,
+    recentJournalSnippets: List<String>,
+  ): Result<AiReflectionInsight> {
+    val moodSummary = recentMoods.take(6).joinToString(", ").ifBlank { "belum ada catatan mood" }
+    val snippetSummary =
+      recentJournalSnippets
+        .take(4)
+        .joinToString(" | ") { it.replace("\n", " ").take(120) }
+        .ifBlank { "belum ada potongan jurnal terbaru" }
+
+    val promptText =
+      """
+      Kamu adalah pendamping refleksi privat pada aplikasi EVORIA.
+      Berdasarkan suasana hati terakhir ($moodSummary) dan tema jurnal terbaru ($snippetSummary), buat:
+      1. `promptQuestion`: satu pertanyaan refleksi personal yang hangat untuk dijawab hari ini (Bahasa Indonesia).
+      2. `warmInsight`: dua kalimat apresiasi/wawasan emosional yang menenangkan dan suportif (Bahasa Indonesia).
+      Jangan menyebut data sensitif secara harfiah jika kosong.
+      """.trimIndent()
+
+    return try {
+      val response = withTimeout(60_000L) { reflectionModel.generateContent(promptText) }
+      val raw = response.text ?: throw IllegalStateException("Respons Gemini AI kosong.")
+      val json = JSONObject(raw)
+      val question = json.optString("promptQuestion").trim()
+      val insight = json.optString("warmInsight").trim()
+      if (question.isBlank() || insight.isBlank()) {
+        Result.failure(IllegalStateException("Gemini AI tidak mengembalikan refleksi yang valid."))
+      } else {
+        Result.success(AiReflectionInsight(promptQuestion = question, warmInsight = insight))
+      }
+    } catch (e: TimeoutCancellationException) {
+      Log.w(TAG, "AI reflection insight timed out", e)
+      Result.failure(IllegalStateException("Permintaan Gemini AI habis waktu. Coba lagi sebentar."))
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.e(TAG, "AI reflection insight failed", e)
+      Result.failure(
+        IllegalStateException(
+          "Gagal memuat refleksi AI: ${e.localizedMessage ?: "gangguan layanan Firebase AI Logic."}"
+        )
+      )
     }
   }
 

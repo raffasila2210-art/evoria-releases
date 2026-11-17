@@ -87,10 +87,11 @@ data class SecuritySettings(
 data class AppUserPrefs(
   val themeMode: ThemeMode = ThemeMode.SYSTEM,
   val accentPreset: EvoriaAccentPreset = EvoriaAccentPreset.TERRACOTTA,
+  val customAccentHex: Long? = null,
   val navbarThemeStyle: NavbarThemeStyle = NavbarThemeStyle.FROST_AURORA,
   val navbarGlassIntensity: NavbarGlassIntensity = NavbarGlassIntensity.BALANCED,
   val reducedMotionOverride: Boolean = false,
-  val lock60Fps: Boolean = true,
+  val lock60Fps: Boolean = false,
   val onboardingCompleted: Boolean = false,
   val aiSearchConsent: Boolean = false,
   val activeTabIndex: Int = 0,
@@ -108,6 +109,8 @@ data class AppUserPrefs(
   val devGithub: String = "",
   val devEmail: String = "",
   val devWebsite: String = "",
+  val profileBannerUri: String? = null,
+  val profileBannerType: String = "",
 )
 
 sealed interface PinVerifyResult {
@@ -118,9 +121,12 @@ sealed interface PinVerifyResult {
 
 class SecurityPreferences(private val context: Context) {
 
+  private val syncPrefs = context.getSharedPreferences("evoria_security_sync", Context.MODE_PRIVATE)
+
   private object Keys {
     val THEME_MODE = stringPreferencesKey("theme_mode")
     val ACCENT_PRESET = stringPreferencesKey("accent_preset")
+    val CUSTOM_ACCENT_HEX = longPreferencesKey("custom_accent_hex")
     val NAVBAR_THEME_STYLE = stringPreferencesKey("navbar_theme_style")
     val NAVBAR_GLASS_INTENSITY = stringPreferencesKey("navbar_glass_intensity")
     val REDUCED_MOTION = booleanPreferencesKey("reduced_motion")
@@ -152,10 +158,14 @@ class SecurityPreferences(private val context: Context) {
     val DEV_GITHUB = stringPreferencesKey("dev_github")
     val DEV_EMAIL = stringPreferencesKey("dev_email")
     val DEV_WEBSITE = stringPreferencesKey("dev_website")
+    val PROFILE_BANNER_URI = stringPreferencesKey("profile_banner_uri")
+    val PROFILE_BANNER_TYPE = stringPreferencesKey("profile_banner_type")
   }
 
   val securitySettingsFlow: Flow<SecuritySettings> =
     context.evoriaDataStore.data.map { prefs ->
+      val bgFromStore = prefs[Keys.LAST_BACKGROUND] ?: 0L
+      val bgFromSync = syncPrefs.getLong("last_background_sync", 0L)
       SecuritySettings(
         appLockEnabled = prefs[Keys.APP_LOCK_ENABLED] ?: false,
         hasPinConfigured = !prefs[Keys.PIN_HASH].isNullOrBlank() && !prefs[Keys.PIN_SALT].isNullOrBlank(),
@@ -167,7 +177,7 @@ class SecurityPreferences(private val context: Context) {
             .getOrDefault(AutoLockTimeout.IMMEDIATE),
         failedAttempts = prefs[Keys.FAILED_ATTEMPTS] ?: 0,
         cooldownUntilMillis = prefs[Keys.COOLDOWN_UNTIL] ?: 0L,
-        lastBackgroundMillis = prefs[Keys.LAST_BACKGROUND] ?: 0L,
+        lastBackgroundMillis = maxOf(bgFromStore, bgFromSync),
       )
     }
 
@@ -184,6 +194,7 @@ class SecurityPreferences(private val context: Context) {
         accentPreset =
           runCatching { EvoriaAccentPreset.valueOf(prefs[Keys.ACCENT_PRESET] ?: "TERRACOTTA") }
             .getOrDefault(EvoriaAccentPreset.TERRACOTTA),
+        customAccentHex = prefs[Keys.CUSTOM_ACCENT_HEX]?.takeIf { it != 0L },
         navbarThemeStyle =
           runCatching { NavbarThemeStyle.valueOf(prefs[Keys.NAVBAR_THEME_STYLE] ?: "FROST_AURORA") }
             .getOrDefault(NavbarThemeStyle.FROST_AURORA),
@@ -191,7 +202,7 @@ class SecurityPreferences(private val context: Context) {
           runCatching { NavbarGlassIntensity.valueOf(prefs[Keys.NAVBAR_GLASS_INTENSITY] ?: "BALANCED") }
             .getOrDefault(NavbarGlassIntensity.BALANCED),
         reducedMotionOverride = prefs[Keys.REDUCED_MOTION] ?: false,
-        lock60Fps = prefs[Keys.LOCK_60_FPS] ?: true,
+        lock60Fps = prefs[Keys.LOCK_60_FPS] ?: false,
         onboardingCompleted = prefs[Keys.ONBOARDING_COMPLETED] ?: false,
         aiSearchConsent = prefs[Keys.AI_SEARCH_CONSENT] ?: false,
         activeTabIndex = (prefs[Keys.ACTIVE_TAB] ?: 0).coerceIn(0, 4),
@@ -209,6 +220,8 @@ class SecurityPreferences(private val context: Context) {
         devGithub = prefs[Keys.DEV_GITHUB].orEmpty(),
         devEmail = prefs[Keys.DEV_EMAIL].orEmpty(),
         devWebsite = prefs[Keys.DEV_WEBSITE].orEmpty(),
+        profileBannerUri = prefs[Keys.PROFILE_BANNER_URI]?.takeIf { it.isNotBlank() },
+        profileBannerType = prefs[Keys.PROFILE_BANNER_TYPE].orEmpty(),
       )
     }
 
@@ -217,7 +230,20 @@ class SecurityPreferences(private val context: Context) {
   }
 
   suspend fun setAccentPreset(preset: EvoriaAccentPreset) {
-    context.evoriaDataStore.edit { it[Keys.ACCENT_PRESET] = preset.name }
+    context.evoriaDataStore.edit {
+      it[Keys.ACCENT_PRESET] = preset.name
+      it.remove(Keys.CUSTOM_ACCENT_HEX)
+    }
+  }
+
+  suspend fun setCustomAccentHex(colorHex: Long?) {
+    context.evoriaDataStore.edit {
+      if (colorHex == null || colorHex == 0L) {
+        it.remove(Keys.CUSTOM_ACCENT_HEX)
+      } else {
+        it[Keys.CUSTOM_ACCENT_HEX] = colorHex
+      }
+    }
   }
 
   suspend fun setNavbarThemeStyle(style: NavbarThemeStyle) {
@@ -257,6 +283,20 @@ class SecurityPreferences(private val context: Context) {
       it[Keys.DEV_GITHUB] = github.trim()
       it[Keys.DEV_EMAIL] = email.trim()
       it[Keys.DEV_WEBSITE] = website.trim()
+    }
+  }
+
+  suspend fun setProfileBanner(uri: String?, mediaType: String) {
+    context.evoriaDataStore.edit {
+      it[Keys.PROFILE_BANNER_URI] = uri.orEmpty()
+      it[Keys.PROFILE_BANNER_TYPE] = if (uri.isNullOrBlank()) "" else mediaType
+    }
+  }
+
+  suspend fun clearProfileBanner() {
+    context.evoriaDataStore.edit {
+      it.remove(Keys.PROFILE_BANNER_URI)
+      it.remove(Keys.PROFILE_BANNER_TYPE)
     }
   }
 
@@ -309,6 +349,7 @@ class SecurityPreferences(private val context: Context) {
   }
 
   suspend fun setAppLockEnabled(enabled: Boolean) {
+    syncPrefs.edit().putBoolean("app_lock_enabled_sync", enabled).commit()
     context.evoriaDataStore.edit { it[Keys.APP_LOCK_ENABLED] = enabled }
   }
 
@@ -320,7 +361,12 @@ class SecurityPreferences(private val context: Context) {
     context.evoriaDataStore.edit { it[Keys.AUTO_LOCK_TIMEOUT] = timeout.name }
   }
 
+  fun recordBackgroundTimestampSync(nowMillis: Long = System.currentTimeMillis()) {
+    syncPrefs.edit().putLong("last_background_sync", nowMillis).commit()
+  }
+
   suspend fun recordBackgroundTimestamp(nowMillis: Long = System.currentTimeMillis()) {
+    syncPrefs.edit().putLong("last_background_sync", nowMillis).commit()
     context.evoriaDataStore.edit { it[Keys.LAST_BACKGROUND] = nowMillis }
   }
 
@@ -328,6 +374,10 @@ class SecurityPreferences(private val context: Context) {
     require(pin.length == 6 && pin.all { it.isDigit() }) { "PIN harus terdiri dari 6 angka." }
     val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
     val hash = derivePinHash(pin, salt)
+    syncPrefs.edit()
+      .putBoolean("app_lock_enabled_sync", true)
+      .putBoolean("has_pin_sync", true)
+      .commit()
     context.evoriaDataStore.edit {
       it[Keys.PIN_SALT] = Base64.encodeToString(salt, Base64.NO_WRAP)
       it[Keys.PIN_HASH] = Base64.encodeToString(hash, Base64.NO_WRAP)
@@ -338,6 +388,10 @@ class SecurityPreferences(private val context: Context) {
   }
 
   suspend fun clearPinAndDisableLock() {
+    syncPrefs.edit()
+      .putBoolean("app_lock_enabled_sync", false)
+      .putBoolean("has_pin_sync", false)
+      .commit()
     context.evoriaDataStore.edit {
       it.remove(Keys.PIN_SALT)
       it.remove(Keys.PIN_HASH)

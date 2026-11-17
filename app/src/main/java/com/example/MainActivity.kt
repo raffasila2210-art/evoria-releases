@@ -1,10 +1,15 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -12,9 +17,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -29,8 +38,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.credentials.CredentialManager
 import androidx.fragment.app.FragmentActivity
@@ -53,6 +69,7 @@ import com.example.data.local.SecurityPreferences
 import com.example.data.local.ThemeMode
 import com.example.data.remote.EvoriaCloudRepository
 import com.example.media.EvoriaPlayerManager
+import com.example.notifications.EvoriaNotificationHelper
 import com.example.ui.EvoriaViewModel
 import com.example.ui.components.CloudBloomOverlay
 import com.example.ui.components.EvoriaMiniPlayerBar
@@ -62,12 +79,14 @@ import com.example.ui.screens.AboutEvoriaScreen
 import com.example.ui.screens.AddOrEditMemoryScreen
 import com.example.ui.screens.AlbumDetailScreen
 import com.example.ui.screens.AppLockScreen
+import com.example.ui.screens.AppearanceSettingsScreen
 import com.example.ui.screens.BerandaScreen
 import com.example.ui.screens.FirstProfileSetupDialogContent
 import com.example.ui.screens.FullMusicPlayerScreen
 import com.example.ui.screens.FullscreenPhotoViewer
 import com.example.ui.screens.FullscreenVideoViewer
 import com.example.ui.screens.JelajahScreen
+import com.example.ui.screens.KenanganDetailScreen
 import com.example.ui.screens.KenanganScreen
 import com.example.ui.screens.LiquidGlassShowcaseScreen
 import com.example.ui.screens.MemoryDetailScreen
@@ -82,18 +101,21 @@ import com.example.ui.screens.SecurityAndAppLockScreen
 import com.example.ui.screens.ShareInboxScreen
 import com.example.ui.screens.StorageAndBackupScreen
 import com.example.ui.screens.UploadQueueScreen
+import com.example.ui.screens.YouTubeFullTrackEmbedPlayer
 import com.example.ui.theme.EvoriaTheme
 import com.example.util.FrameRateController
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 private sealed interface EvoriaRoute {
   data object MainTabs : EvoriaRoute
   data class AlbumDetail(val albumId: String) : EvoriaRoute
+  data class KenanganDetail(val collectionId: String) : EvoriaRoute
   data class MemoryDetail(val memoryId: String) : EvoriaRoute
   data class AddOrEditMemory(val memoryId: String?) : EvoriaRoute
-  data class FullscreenPhoto(val uri: String, val title: String) : EvoriaRoute
+  data class FullscreenPhoto(val uri: String, val title: String, val memoryId: String? = null) : EvoriaRoute
   data class FullscreenVideo(val uri: String) : EvoriaRoute
   data object UploadQueue : EvoriaRoute
   data object ConnectPartner : EvoriaRoute
@@ -104,6 +126,7 @@ private sealed interface EvoriaRoute {
   data object Security : EvoriaRoute
   data object StorageBackup : EvoriaRoute
   data object LiquidGlassShowcase : EvoriaRoute
+  data object Appearance : EvoriaRoute
   data object About : EvoriaRoute
 }
 
@@ -111,6 +134,7 @@ class MainActivity : FragmentActivity() {
 
   private var pendingQuickShareUris by mutableStateOf<List<Uri>>(emptyList())
   private var pendingInviteCode by mutableStateOf<String?>(null)
+  private var pendingNotifRoute by mutableStateOf<String?>(null)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -141,6 +165,7 @@ class MainActivity : FragmentActivity() {
       EvoriaTheme(
         themeMode = userPrefs.themeMode,
         accentPreset = userPrefs.accentPreset,
+        customAccentHex = userPrefs.customAccentHex,
       ) {
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
@@ -191,6 +216,7 @@ class MainActivity : FragmentActivity() {
                       searchEngine = searchEngine,
                       playerManager = playerManager,
                       currentUserEmail = user.email,
+                      appContext = appCtx,
                     )
                   }
                 },
@@ -205,6 +231,8 @@ class MainActivity : FragmentActivity() {
             onClearQuickShare = { pendingQuickShareUris = emptyList() },
             pendingInviteCode = pendingInviteCode,
             onConsumeInviteCode = { pendingInviteCode = null },
+            pendingNotifRoute = pendingNotifRoute,
+            onConsumeNotifRoute = { pendingNotifRoute = null },
             onSignOut = {
               signOut(credentialManager = credentialManager, scope = scope)
             },
@@ -222,6 +250,10 @@ class MainActivity : FragmentActivity() {
 
   private fun handleIncomingIntent(intent: Intent?) {
     if (intent == null) return
+    val notifRoute = intent.getStringExtra(EvoriaNotificationHelper.EXTRA_NOTIF_ROUTE)
+    if (!notifRoute.isNullOrBlank()) {
+      pendingNotifRoute = notifRoute
+    }
     when (intent.action) {
       Intent.ACTION_SEND -> {
         val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
@@ -262,49 +294,49 @@ private fun EvoriaAuthenticatedShell(
   onClearQuickShare: () -> Unit,
   pendingInviteCode: String?,
   onConsumeInviteCode: () -> Unit,
+  pendingNotifRoute: String?,
+  onConsumeNotifRoute: () -> Unit,
   onSignOut: () -> Unit,
 ) {
+  val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
   val userPrefs by viewModel.userPrefs.collectAsStateWithLifecycle()
   val activeTabIndex by viewModel.activeTabIndex.collectAsStateWithLifecycle()
-  val spotifyImportState by viewModel.spotifyImportState.collectAsStateWithLifecycle()
-  val youtubeMatchingPlaylistId by viewModel.youtubeMatchingPlaylistId.collectAsStateWithLifecycle()
   val securitySettings by viewModel.securitySettings.collectAsStateWithLifecycle()
+  val isSecurityResolved by viewModel.isSecurityResolved.collectAsStateWithLifecycle()
   val isLocked by viewModel.isLocked.collectAsStateWithLifecycle()
   val isProfileResolved by viewModel.isProfileResolved.collectAsStateWithLifecycle()
   val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
   val activeCouple by viewModel.activeCouple.collectAsStateWithLifecycle()
-  val myInvitations by viewModel.myInvitations.collectAsStateWithLifecycle()
-  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
-  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
-  val sharedMemories by viewModel.sharedMemories.collectAsStateWithLifecycle()
-  val shareRequests by viewModel.shareRequests.collectAsStateWithLifecycle()
-  val uploadJobs by viewModel.uploadJobs.collectAsStateWithLifecycle()
-  val journals by viewModel.journals.collectAsStateWithLifecycle()
-  val letters by viewModel.letters.collectAsStateWithLifecycle()
-  val moods by viewModel.moods.collectAsStateWithLifecycle()
-  val reflectionAnswers by viewModel.reflectionAnswers.collectAsStateWithLifecycle()
-  val capsules by viewModel.timeCapsules.collectAsStateWithLifecycle()
-  val playlists by viewModel.playlists.collectAsStateWithLifecycle()
-  val tracks by viewModel.tracks.collectAsStateWithLifecycle()
-  val localNotifications by viewModel.localNotifications.collectAsStateWithLifecycle()
-  val remoteNotifications by viewModel.remoteNotifications.collectAsStateWithLifecycle()
-  val syncCheckpoint by viewModel.syncCheckpoint.collectAsStateWithLifecycle()
-  val localStorageLabel by viewModel.localStorageLabel.collectAsStateWithLifecycle()
-
+  val playerState by viewModel.playerState.collectAsStateWithLifecycle()
   val bloomMessage by viewModel.bloomMessage.collectAsStateWithLifecycle()
   val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
-  val generatedInvitation by viewModel.generatedInvitation.collectAsStateWithLifecycle()
-  val lookedUpInvitation by viewModel.lookedUpInvitation.collectAsStateWithLifecycle()
-  val inviteLoading by viewModel.inviteLoading.collectAsStateWithLifecycle()
-  val inviteError by viewModel.inviteActionError.collectAsStateWithLifecycle()
-  val searchState by viewModel.searchState.collectAsStateWithLifecycle()
 
   var currentRoute by remember { mutableStateOf<EvoriaRoute>(EvoriaRoute.MainTabs) }
+  var returnRouteFromFullPlayer by remember { mutableStateOf<EvoriaRoute>(EvoriaRoute.MainTabs) }
   var quickOpenApplied by rememberSaveable(uid) { mutableStateOf(false) }
   var favoritesOnlyKenangan by remember { mutableStateOf(false) }
   var profileSetupDismissed by rememberSaveable(uid) { mutableStateOf(false) }
   var deepLinkCodeForScreen by remember { mutableStateOf<String?>(null) }
+  var youtubeSlotBounds by remember { mutableStateOf<Rect?>(null) }
+
+  val notifPermLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+  LaunchedEffect(uid) {
+    if (Build.VERSION.SDK_INT >= 33) {
+      val hasPerm =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+          PackageManager.PERMISSION_GRANTED
+      if (!hasPerm) {
+        val permPrefs = context.getSharedPreferences("evoria_perm_prompts", android.content.Context.MODE_PRIVATE)
+        if (!permPrefs.getBoolean("notif_prompted", false)) {
+          permPrefs.edit().putBoolean("notif_prompted", true).apply()
+          notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+      }
+    }
+  }
 
   LaunchedEffect(userPrefs.quickOpenShowcaseOnLaunch) {
     if (userPrefs.quickOpenShowcaseOnLaunch && !quickOpenApplied) {
@@ -328,10 +360,9 @@ private fun EvoriaAuthenticatedShell(
     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
 
-  // Also check lock at initial cold launch when appLock is enabled
-  LaunchedEffect(securitySettings.appLockEnabled, securitySettings.hasPinConfigured) {
-    if (securitySettings.appLockEnabled && securitySettings.hasPinConfigured && securitySettings.lastBackgroundMillis == 0L) {
-      viewModel.evaluateAutoLockOnResume()
+  LaunchedEffect(currentRoute) {
+    if (currentRoute != EvoriaRoute.FullMusicPlayer) {
+      youtubeSlotBounds = null
     }
   }
 
@@ -351,10 +382,33 @@ private fun EvoriaAuthenticatedShell(
     }
   }
 
-  val unreadNotifs =
-    localNotifications.count { !it.isRead } + remoteNotifications.count { !it.isRead }
-  val pendingSharesCount =
-    shareRequests.count { it.status == "pending" && it.recipientUid == uid }
+  LaunchedEffect(pendingNotifRoute) {
+    val target = pendingNotifRoute ?: return@LaunchedEffect
+    onConsumeNotifRoute()
+    currentRoute =
+      when (target) {
+        "share_inbox" -> EvoriaRoute.ShareInbox
+        "partner" -> EvoriaRoute.ConnectPartner
+        "full_music_player" -> {
+          returnRouteFromFullPlayer = EvoriaRoute.MainTabs
+          EvoriaRoute.FullMusicPlayer
+        }
+        else -> EvoriaRoute.Notifications
+      }
+  }
+
+  // 0. Wait for Security DataStore resolution on cold launch so locked apps never bypass PIN/biometric gate
+  if (!isSecurityResolved) {
+    EvoriaSanctuaryBackdrop {
+      Box(
+        modifier = Modifier.fillMaxSize().testTag("security_gate_loading"),
+        contentAlignment = Alignment.Center,
+      ) {
+        CircularProgressIndicator()
+      }
+    }
+    return
+  }
 
   // 1. Security App Lock Overlay (blocks everything including Quick Share & navbar when locked)
   if (isLocked) {
@@ -368,32 +422,11 @@ private fun EvoriaAuthenticatedShell(
 
   // 2. Android Quick Share Flow
   if (pendingQuickShareUris.isNotEmpty()) {
-    QuickShareScreen(
+    QuickShareRouteHost(
+      viewModel = viewModel,
       sharedUris = pendingQuickShareUris,
-      albums = albums,
       hasConnectedPartner = activeCouple != null,
-      onCreateInlineAlbum = { title, vis ->
-        viewModel.createOrUpdateAlbum(
-          title = title,
-          description = "",
-          visibility = vis,
-          soundtrackTitle = null,
-        )
-      },
-      onConfirmSave = { uris, title, caption, albumId, visibility ->
-        viewModel.saveNewMemoriesFromUris(
-          uris = uris,
-          titlePrefix = title,
-          caption = caption,
-          story = "",
-          locationName = "",
-          albumId = albumId,
-          visibility = visibility,
-          tagsCsv = "",
-          onDone = onClearQuickShare,
-        )
-      },
-      onCancel = onClearQuickShare,
+      onClearQuickShare = onClearQuickShare,
     )
     return
   }
@@ -433,15 +466,11 @@ private fun EvoriaAuthenticatedShell(
             ) {
               when (activeTabIndex) {
                 0 ->
-                  BerandaScreen(
-                    profile = userProfile,
+                  BerandaTabHost(
+                    viewModel = viewModel,
+                    userProfile = userProfile,
                     fallbackName = fallbackName,
-                    couple = activeCouple,
-                    localMemories = memories,
-                    sharedMemories = sharedMemories,
-                    journals = journals,
-                    uploadJobs = uploadJobs,
-                    unreadNotifCount = unreadNotifs,
+                    activeCouple = activeCouple,
                     lastViewedMemoryId = userPrefs.lastViewedMemoryId,
                     onOpenAddMemory = { currentRoute = EvoriaRoute.AddOrEditMemory(null) },
                     onOpenConnectPartner = { currentRoute = EvoriaRoute.ConnectPartner },
@@ -460,46 +489,24 @@ private fun EvoriaAuthenticatedShell(
                   )
 
                 1 ->
-                  KenanganScreen(
-                    albums = albums,
-                    memories = memories,
-                    favoritesOnlyDefault = favoritesOnlyKenangan,
+                  KenanganTabHost(
+                    viewModel = viewModel,
+                    favoritesOnlyKenangan = favoritesOnlyKenangan,
                     onConsumeFavoritesDefault = { favoritesOnlyKenangan = false },
                     onOpenAlbum = { id -> currentRoute = EvoriaRoute.AlbumDetail(id) },
+                    onOpenKenangan = { id -> currentRoute = EvoriaRoute.KenanganDetail(id) },
                     onOpenMemory = { id ->
                       viewModel.setLastViewedMemory(id)
                       currentRoute = EvoriaRoute.MemoryDetail(id)
                     },
                     onOpenAddMemory = { currentRoute = EvoriaRoute.AddOrEditMemory(null) },
-                    onImportGalleryPhotos = { uris ->
-                      viewModel.saveNewMemoriesFromUris(
-                        uris = uris,
-                        titlePrefix = "Galeri Kita",
-                        caption = "",
-                        story = "",
-                        locationName = "",
-                        albumId = null,
-                        visibility = "private",
-                        tagsCsv = "galeri",
-                      )
-                    },
-                    onSaveAlbum = { existingId, title, desc, vis, soundtrack, coverUri, existingCover ->
-                      viewModel.createOrUpdateAlbum(existingId, title, desc, vis, soundtrack, coverUri, existingCover)
-                    },
-                    onToggleFavorite = viewModel::toggleMemoryFavorite,
-                    onDeleteMemories = { list -> list.forEach { viewModel.deleteMemory(it) } },
                   )
 
                 2 ->
-                  JelajahScreen(
-                    memories = memories,
-                    albums = albums,
+                  JelajahTabHost(
+                    viewModel = viewModel,
                     searchHistory = userPrefs.searchHistory,
                     aiConsentGranted = userPrefs.aiSearchConsent,
-                    searchState = searchState,
-                    onToggleAiConsent = viewModel::setAiSearchConsent,
-                    onRunSearch = viewModel::runSearch,
-                    onClearHistory = viewModel::clearSearchHistory,
                     onOpenMemory = { id ->
                       viewModel.setLastViewedMemory(id)
                       currentRoute = EvoriaRoute.MemoryDetail(id)
@@ -507,46 +514,22 @@ private fun EvoriaAuthenticatedShell(
                   )
 
                 3 ->
-                  RefleksiScreen(
-                    journals = journals,
-                    letters = letters,
-                    moods = moods,
-                    reflectionAnswers = reflectionAnswers,
-                    capsules = capsules,
-                    onSaveJournal = viewModel::saveJournal,
-                    onDeleteJournal = viewModel::deleteJournal,
-                    onSaveLetter = viewModel::saveLetter,
-                    onDeleteLetter = viewModel::deleteLetter,
-                    onRecordMood = viewModel::recordMood,
-                    onSaveReflectionAnswer = viewModel::saveReflectionAnswer,
-                    onCreateTimeCapsule = viewModel::createTimeCapsule,
-                    onReadEnforcedCapsule = viewModel::readEnforcedCapsule,
+                  RefleksiTabHost(
+                    viewModel = viewModel,
+                    currentUid = uid,
+                    aiConsentGranted = userPrefs.aiSearchConsent,
                     onOpenMusic = { currentRoute = EvoriaRoute.Music },
                   )
 
                 else ->
-                  ProfilScreen(
+                  ProfilTabHost(
+                    viewModel = viewModel,
                     currentUid = uid,
-                    profile = userProfile,
+                    userProfile = userProfile,
                     fallbackName = fallbackName,
-                    couple = activeCouple,
-                    albumCount = albums.size,
-                    memoryCount = memories.size,
-                    journalCount = journals.size,
-                    capsuleCount = capsules.size,
-                    pendingShareRequestsCount = pendingSharesCount,
-                    unreadNotificationCount = unreadNotifs,
-                    localStorageLabel = localStorageLabel,
+                    activeCouple = activeCouple,
                     userPrefs = userPrefs,
                     securitySettings = securitySettings,
-                    onSetThemeMode = viewModel::setThemeMode,
-                    onSetAccentPreset = viewModel::setAccentPreset,
-                    onSetNavbarThemeStyle = viewModel::setNavbarThemeStyle,
-                    onSetNavbarGlassIntensity = viewModel::setNavbarGlassIntensity,
-                    onSetReducedMotion = viewModel::setReducedMotion,
-                    onSetLock60Fps = viewModel::setLock60Fps,
-                    onSaveProfile = viewModel::saveProfileSetup,
-                    onDeleteAllLocalData = viewModel::clearAllLocalData,
                     onOpenConnectPartner = { currentRoute = EvoriaRoute.ConnectPartner },
                     onOpenShareInbox = { currentRoute = EvoriaRoute.ShareInbox },
                     onOpenNotifications = { currentRoute = EvoriaRoute.Notifications },
@@ -555,6 +538,7 @@ private fun EvoriaAuthenticatedShell(
                     onOpenSecurity = { currentRoute = EvoriaRoute.Security },
                     onOpenBackupStorage = { currentRoute = EvoriaRoute.StorageBackup },
                     onOpenLiquidGlassShowcase = { currentRoute = EvoriaRoute.LiquidGlassShowcase },
+                    onOpenAppearanceSettings = { currentRoute = EvoriaRoute.Appearance },
                     onOpenAbout = { currentRoute = EvoriaRoute.About },
                     onSignOut = onSignOut,
                   )
@@ -567,7 +551,10 @@ private fun EvoriaAuthenticatedShell(
               ) {
                 EvoriaFloatingMiniPlayerOverlay(
                   viewModel = viewModel,
-                  onOpenFullPlayer = { currentRoute = EvoriaRoute.FullMusicPlayer },
+                  onOpenFullPlayer = {
+                    returnRouteFromFullPlayer = EvoriaRoute.MainTabs
+                    currentRoute = EvoriaRoute.FullMusicPlayer
+                  },
                 )
                 LiquidGlassNavbar(
                   selectedTabIndex = activeTabIndex,
@@ -587,98 +574,61 @@ private fun EvoriaAuthenticatedShell(
       }
 
       is EvoriaRoute.AlbumDetail -> {
-        val album = albums.firstOrNull { it.id == route.albumId }
-        if (album == null) {
-          LaunchedEffect(Unit) { currentRoute = EvoriaRoute.MainTabs }
-        } else {
-          AlbumDetailScreen(
-            album = album,
-            memories = memories.filter { it.albumId == album.id },
-            onBack = { currentRoute = EvoriaRoute.MainTabs },
-            onOpenMemory = { id ->
-              viewModel.setLastViewedMemory(id)
-              currentRoute = EvoriaRoute.MemoryDetail(id)
-            },
-            onEditAlbum = { t, d, v, s, c ->
-              viewModel.createOrUpdateAlbum(album.id, t, d, v, s, c, album.coverUri)
-            },
-            onDeleteAlbum = {
-              viewModel.deleteAlbum(album.id)
-              currentRoute = EvoriaRoute.MainTabs
-            },
-          )
-        }
-      }
-
-      is EvoriaRoute.MemoryDetail -> {
-        val mem = memories.firstOrNull { it.id == route.memoryId }
-        if (mem == null) {
-          LaunchedEffect(Unit) { currentRoute = EvoriaRoute.MainTabs }
-        } else {
-          MemoryDetailScreen(
-            memory = mem,
-            onBack = { currentRoute = EvoriaRoute.MainTabs },
-            onToggleFavorite = { viewModel.toggleMemoryFavorite(mem) },
-            onEdit = { currentRoute = EvoriaRoute.AddOrEditMemory(mem.id) },
-            onDelete = {
-              viewModel.deleteMemory(mem)
-              currentRoute = EvoriaRoute.MainTabs
-            },
-            onSendEvoriaShare = { viewModel.sendShareRequestToPartner(mem) },
-            onOpenFullscreenPhoto = {
-              mem.mediaUri?.let { uri ->
-                currentRoute = EvoriaRoute.FullscreenPhoto(uri, mem.title)
-              }
-            },
-            onOpenFullscreenVideo = {
-              mem.mediaUri?.let { uri ->
-                currentRoute = EvoriaRoute.FullscreenVideo(uri)
-              }
-            },
-          )
-        }
-      }
-
-      is EvoriaRoute.AddOrEditMemory -> {
-        val existing: LocalMemoryEntity? =
-          route.memoryId?.let { id -> memories.firstOrNull { it.id == id } }
-        AddOrEditMemoryScreen(
-          existing = existing,
-          albums = albums,
+        AlbumDetailRouteHost(
+          viewModel = viewModel,
+          albumId = route.albumId,
           onBack = { currentRoute = EvoriaRoute.MainTabs },
-          onSaveMediaMemories = { uris, title, caption, story, location, albumId, visibility, tagsCsv ->
-            viewModel.saveNewMemoriesFromUris(
-              uris = uris,
-              titlePrefix = title,
-              caption = caption,
-              story = story,
-              locationName = location,
-              albumId = albumId,
-              visibility = visibility,
-              tagsCsv = tagsCsv,
-              onDone = { currentRoute = EvoriaRoute.MainTabs },
-            )
-          },
-          onSaveStoryOnly = { ex, title, caption, story, location, albumId, visibility, tagsCsv ->
-            viewModel.saveStoryOnlyMemory(
-              existing = ex,
-              title = title,
-              caption = caption,
-              story = story,
-              locationName = location,
-              albumId = albumId,
-              visibility = visibility,
-              tagsCsv = tagsCsv,
-            )
-            currentRoute = EvoriaRoute.MainTabs
+          onOpenMemory = { id ->
+            viewModel.setLastViewedMemory(id)
+            currentRoute = EvoriaRoute.MemoryDetail(id)
           },
         )
       }
 
+      is EvoriaRoute.KenanganDetail -> {
+        KenanganDetailRouteHost(
+          viewModel = viewModel,
+          collectionId = route.collectionId,
+          onBack = { currentRoute = EvoriaRoute.MainTabs },
+          onOpenAlbum = { id -> currentRoute = EvoriaRoute.AlbumDetail(id) },
+          onOpenMemory = { id ->
+            viewModel.setLastViewedMemory(id)
+            currentRoute = EvoriaRoute.MemoryDetail(id)
+          },
+        )
+      }
+
+      is EvoriaRoute.MemoryDetail -> {
+        MemoryDetailRouteHost(
+          viewModel = viewModel,
+          memoryId = route.memoryId,
+          onBack = { currentRoute = EvoriaRoute.MainTabs },
+          onEdit = { currentRoute = EvoriaRoute.AddOrEditMemory(route.memoryId) },
+          onOpenFullscreenPhoto = { uri, title, memId ->
+            currentRoute = EvoriaRoute.FullscreenPhoto(uri, title, memId)
+          },
+          onOpenFullscreenVideo = { uri ->
+            currentRoute = EvoriaRoute.FullscreenVideo(uri)
+          },
+        )
+      }
+
+      is EvoriaRoute.AddOrEditMemory -> {
+        AddOrEditMemoryRouteHost(
+          viewModel = viewModel,
+          memoryId = route.memoryId,
+          aiConsentGranted = userPrefs.aiSearchConsent,
+          onBack = { currentRoute = EvoriaRoute.MainTabs },
+        )
+      }
+
       is EvoriaRoute.FullscreenPhoto -> {
-        FullscreenPhotoViewer(
+        FullscreenPhotoRouteHost(
+          viewModel = viewModel,
           mediaUri = route.uri,
           title = route.title,
+          memoryId = route.memoryId,
+          onEdit = { id -> currentRoute = EvoriaRoute.AddOrEditMemory(id) },
           onBack = { currentRoute = EvoriaRoute.MainTabs },
         )
       }
@@ -691,34 +641,19 @@ private fun EvoriaAuthenticatedShell(
       }
 
       EvoriaRoute.UploadQueue -> {
-        UploadQueueScreen(
-          jobs = uploadJobs,
-          onRetry = viewModel::retryUploadJob,
-          onDelete = viewModel::deleteUploadJob,
+        UploadQueueRouteHost(
+          viewModel = viewModel,
           onBack = { currentRoute = EvoriaRoute.MainTabs },
         )
       }
 
       EvoriaRoute.ConnectPartner -> {
-        PartnerConnectionScreen(
+        ConnectPartnerRouteHost(
+          viewModel = viewModel,
           currentUid = uid,
-          couple = activeCouple,
-          generatedInvitation = generatedInvitation,
-          myInvitations = myInvitations,
-          lookedUpInvitation = lookedUpInvitation,
-          inviteLoading = inviteLoading,
-          inviteError = inviteError,
+          activeCouple = activeCouple,
           initialCodeFromDeepLink = deepLinkCodeForScreen,
-          onGenerateCode = viewModel::generatePartnerCode,
-          onCancelInvitation = viewModel::cancelInvitation,
-          onLookupCode = viewModel::lookupInvitationCode,
-          onAcceptInvitation = viewModel::acceptLookedUpInvitation,
-          onDeclineInvitation = viewModel::declineLookedUpInvitation,
-          onClearLookup = {
-            deepLinkCodeForScreen = null
-            viewModel.clearLookedUpInvitation()
-          },
-          onDisconnectCouple = viewModel::disconnectCouple,
+          onClearDeepLink = { deepLinkCodeForScreen = null },
           onBack = {
             deepLinkCodeForScreen = null
             currentRoute = EvoriaRoute.MainTabs
@@ -727,23 +662,21 @@ private fun EvoriaAuthenticatedShell(
       }
 
       EvoriaRoute.ShareInbox -> {
-        ShareInboxScreen(
+        ShareInboxRouteHost(
+          viewModel = viewModel,
           currentUid = uid,
-          requests = shareRequests,
-          onAccept = { viewModel.respondShareRequest(it, accept = true) },
-          onDecline = { viewModel.respondShareRequest(it, accept = false) },
-          onRevoke = viewModel::revokeShareRequest,
+          onOpenFullPlayer = {
+            returnRouteFromFullPlayer = EvoriaRoute.Music
+            currentRoute = EvoriaRoute.FullMusicPlayer
+          },
           onBack = { currentRoute = EvoriaRoute.MainTabs },
         )
       }
 
       EvoriaRoute.Notifications -> {
-        NotificationCenterScreen(
-          localNotifications = localNotifications,
-          remoteNotifications = remoteNotifications,
+        NotificationsRouteHost(
+          viewModel = viewModel,
           userPrefs = userPrefs,
-          onUpdatePrefs = viewModel::updateNotificationPrefs,
-          onMarkAllRead = viewModel::markAllNotificationsRead,
           onBack = { currentRoute = EvoriaRoute.MainTabs },
         )
       }
@@ -751,12 +684,11 @@ private fun EvoriaAuthenticatedShell(
       EvoriaRoute.Music -> {
         EvoriaMusicRouteContent(
           viewModel = viewModel,
-          playlists = playlists,
-          tracks = tracks,
-          albums = albums,
-          spotifyImportState = spotifyImportState,
-          matchingYouTubePlaylistId = youtubeMatchingPlaylistId,
-          onOpenFullPlayer = { currentRoute = EvoriaRoute.FullMusicPlayer },
+          hasConnectedPartner = activeCouple != null,
+          onOpenFullPlayer = {
+            returnRouteFromFullPlayer = EvoriaRoute.Music
+            currentRoute = EvoriaRoute.FullMusicPlayer
+          },
           onBack = { currentRoute = EvoriaRoute.MainTabs },
         )
       }
@@ -764,7 +696,8 @@ private fun EvoriaAuthenticatedShell(
       EvoriaRoute.FullMusicPlayer -> {
         EvoriaFullMusicPlayerRouteContent(
           viewModel = viewModel,
-          onBack = { currentRoute = EvoriaRoute.Music },
+          onYouTubeSlotBounds = { youtubeSlotBounds = it },
+          onBack = { currentRoute = returnRouteFromFullPlayer },
         )
       }
 
@@ -785,13 +718,8 @@ private fun EvoriaAuthenticatedShell(
       }
 
       EvoriaRoute.StorageBackup -> {
-        StorageAndBackupScreen(
-          localStorageLabel = localStorageLabel,
-          checkpoint = syncCheckpoint,
-          onBackupToCloud = { viewModel.backupMetadataToCloud() },
-          onRestoreFromCloud = viewModel::restoreLatestCloudBackup,
-          onGenerateExportJson = viewModel::generateExportJson,
-          onDeleteAllLocalData = viewModel::clearAllLocalData,
+        StorageBackupRouteHost(
+          viewModel = viewModel,
           onBack = { currentRoute = EvoriaRoute.MainTabs },
         )
       }
@@ -810,6 +738,18 @@ private fun EvoriaAuthenticatedShell(
         )
       }
 
+      EvoriaRoute.Appearance -> {
+        AppearanceSettingsScreen(
+          userPrefs = userPrefs,
+          onSetThemeMode = viewModel::setThemeMode,
+          onSetAccentPreset = viewModel::setAccentPreset,
+          onSetCustomAccentHex = viewModel::setCustomAccentHex,
+          onSetNavbarThemeStyle = viewModel::setNavbarThemeStyle,
+          onSetNavbarGlassIntensity = viewModel::setNavbarGlassIntensity,
+          onBack = { currentRoute = EvoriaRoute.MainTabs },
+        )
+      }
+
       EvoriaRoute.About -> {
         AboutEvoriaScreen(
           userPrefs = userPrefs,
@@ -820,7 +760,36 @@ private fun EvoriaAuthenticatedShell(
       }
     }
 
-    // Gentle full-screen warm Cloud Bloom ONLY after successful memory or album save
+    // Persistent YouTube Audio/Video WebView kept alive across all screens so music continues playing in background
+    val activeYtId = playerState.activeYouTubeVideoId
+    if (playerState.isYouTubeMode && !activeYtId.isNullOrBlank()) {
+      val density = LocalDensity.current
+      val bounds = youtubeSlotBounds
+      val showInFullPlayer = currentRoute == EvoriaRoute.FullMusicPlayer && bounds != null
+      val overlayModifier =
+        if (showInFullPlayer && bounds != null) {
+          with(density) {
+            Modifier
+              .offset { IntOffset(bounds.left.roundToInt(), bounds.top.roundToInt()) }
+              .size(bounds.width.toDp(), bounds.height.toDp())
+              .clip(RoundedCornerShape(18.dp))
+          }
+        } else {
+          Modifier.align(Alignment.BottomStart).size(1.dp).alpha(0.01f)
+        }
+      Box(modifier = overlayModifier) {
+        YouTubeFullTrackEmbedPlayer(
+          videoId = activeYtId,
+          commands = viewModel.playerManager.youtubeCommands,
+          onPlaybackUpdate = viewModel.playerManager::onYouTubePlaybackUpdate,
+          onEnded = viewModel.playerManager::onYouTubeVideoEnded,
+          onError = viewModel.playerManager::onYouTubePlayerError,
+          modifier = Modifier.fillMaxSize(),
+        )
+      }
+    }
+
+    // Gentle full-screen warm Cloud Bloom ONLY after successful memory, album, or kenangan creation
     CloudBloomOverlay(
       visible = bloomMessage != null,
       message = bloomMessage.orEmpty(),
@@ -840,6 +809,566 @@ private fun EvoriaAuthenticatedShell(
 }
 
 @Composable
+private fun QuickShareRouteHost(
+  viewModel: EvoriaViewModel,
+  sharedUris: List<Uri>,
+  hasConnectedPartner: Boolean,
+  onClearQuickShare: () -> Unit,
+) {
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  QuickShareScreen(
+    sharedUris = sharedUris,
+    albums = albums,
+    hasConnectedPartner = hasConnectedPartner,
+    onCreateInlineAlbum = { title, vis ->
+      viewModel.createOrUpdateAlbum(
+        title = title,
+        description = "",
+        visibility = vis,
+        soundtrackTitle = null,
+      )
+    },
+    onConfirmSave = { uris, title, caption, albumId, visibility ->
+      viewModel.saveNewMemoriesFromUris(
+        uris = uris,
+        titlePrefix = title,
+        caption = caption,
+        story = "",
+        locationName = "",
+        albumId = albumId,
+        visibility = visibility,
+        tagsCsv = "",
+        onDone = onClearQuickShare,
+      )
+    },
+    onCancel = onClearQuickShare,
+  )
+}
+
+@Composable
+private fun BerandaTabHost(
+  viewModel: EvoriaViewModel,
+  userProfile: com.example.data.remote.UserProfileDto?,
+  fallbackName: String,
+  activeCouple: com.example.data.remote.CoupleConnectionDto?,
+  lastViewedMemoryId: String?,
+  onOpenAddMemory: () -> Unit,
+  onOpenConnectPartner: () -> Unit,
+  onOpenMemoryDetail: (String) -> Unit,
+  onOpenFavorites: () -> Unit,
+  onOpenNotifications: () -> Unit,
+  onOpenUploadQueue: () -> Unit,
+  onOpenMusic: () -> Unit,
+  onOpenRefleksi: () -> Unit,
+) {
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val sharedMemories by viewModel.sharedMemories.collectAsStateWithLifecycle()
+  val journals by viewModel.journals.collectAsStateWithLifecycle()
+  val uploadJobs by viewModel.uploadJobs.collectAsStateWithLifecycle()
+  val localNotifications by viewModel.localNotifications.collectAsStateWithLifecycle()
+  val remoteNotifications by viewModel.remoteNotifications.collectAsStateWithLifecycle()
+  val unreadNotifs =
+    remember(localNotifications, remoteNotifications) {
+      localNotifications.count { !it.isRead } + remoteNotifications.count { !it.isRead }
+    }
+  BerandaScreen(
+    profile = userProfile,
+    fallbackName = fallbackName,
+    couple = activeCouple,
+    localMemories = memories,
+    sharedMemories = sharedMemories,
+    journals = journals,
+    uploadJobs = uploadJobs,
+    unreadNotifCount = unreadNotifs,
+    lastViewedMemoryId = lastViewedMemoryId,
+    onOpenAddMemory = onOpenAddMemory,
+    onOpenConnectPartner = onOpenConnectPartner,
+    onOpenMemoryDetail = onOpenMemoryDetail,
+    onOpenFavorites = onOpenFavorites,
+    onOpenNotifications = onOpenNotifications,
+    onOpenUploadQueue = onOpenUploadQueue,
+    onOpenMusic = onOpenMusic,
+    onOpenRefleksi = onOpenRefleksi,
+  )
+}
+
+@Composable
+private fun KenanganTabHost(
+  viewModel: EvoriaViewModel,
+  favoritesOnlyKenangan: Boolean,
+  onConsumeFavoritesDefault: () -> Unit,
+  onOpenAlbum: (String) -> Unit,
+  onOpenKenangan: (String) -> Unit,
+  onOpenMemory: (String) -> Unit,
+  onOpenAddMemory: () -> Unit,
+) {
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val kenanganCollections by viewModel.kenanganCollections.collectAsStateWithLifecycle()
+  KenanganScreen(
+    albums = albums,
+    memories = memories,
+    kenanganCollections = kenanganCollections,
+    favoritesOnlyDefault = favoritesOnlyKenangan,
+    onConsumeFavoritesDefault = onConsumeFavoritesDefault,
+    onOpenAlbum = onOpenAlbum,
+    onOpenKenangan = onOpenKenangan,
+    onCreateKenangan = viewModel::createKenanganCollection,
+    onDeleteKenangan = viewModel::deleteKenanganCollection,
+    onOpenMemory = onOpenMemory,
+    onOpenAddMemory = onOpenAddMemory,
+    onImportGalleryPhotos = { uris ->
+      viewModel.saveNewMemoriesFromUris(
+        uris = uris,
+        titlePrefix = "Galeri Kita",
+        caption = "",
+        story = "",
+        locationName = "",
+        albumId = null,
+        visibility = "private",
+        tagsCsv = "galeri",
+      )
+    },
+    onSaveAlbum = { existingId, title, desc, vis, soundtrack, coverUri, existingCover ->
+      viewModel.createOrUpdateAlbum(existingId, title, desc, vis, soundtrack, coverUri, existingCover)
+    },
+    onToggleFavorite = viewModel::toggleMemoryFavorite,
+    onDeleteMemories = { list -> list.forEach { viewModel.deleteMemory(it) } },
+  )
+}
+
+@Composable
+private fun KenanganDetailRouteHost(
+  viewModel: EvoriaViewModel,
+  collectionId: String,
+  onBack: () -> Unit,
+  onOpenAlbum: (String) -> Unit,
+  onOpenMemory: (String) -> Unit,
+) {
+  val collections by viewModel.kenanganCollections.collectAsStateWithLifecycle()
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val collection = remember(collections, collectionId) { collections.firstOrNull { it.id == collectionId } }
+  if (collection == null) {
+    LaunchedEffect(Unit) { onBack() }
+  } else {
+    KenanganDetailScreen(
+      collection = collection,
+      albums = albums,
+      memories = memories,
+      onBack = onBack,
+      onOpenAlbum = onOpenAlbum,
+      onOpenMemory = onOpenMemory,
+      onDeleteKenangan = {
+        viewModel.deleteKenanganCollection(collection.id)
+        onBack()
+      },
+    )
+  }
+}
+
+@Composable
+private fun JelajahTabHost(
+  viewModel: EvoriaViewModel,
+  searchHistory: List<String>,
+  aiConsentGranted: Boolean,
+  onOpenMemory: (String) -> Unit,
+) {
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val searchState by viewModel.searchState.collectAsStateWithLifecycle()
+  JelajahScreen(
+    memories = memories,
+    albums = albums,
+    searchHistory = searchHistory,
+    aiConsentGranted = aiConsentGranted,
+    searchState = searchState,
+    onToggleAiConsent = viewModel::setAiSearchConsent,
+    onRunSearch = viewModel::runSearch,
+    onClearHistory = viewModel::clearSearchHistory,
+    onOpenMemory = onOpenMemory,
+  )
+}
+
+@Composable
+private fun RefleksiTabHost(
+  viewModel: EvoriaViewModel,
+  currentUid: String,
+  aiConsentGranted: Boolean,
+  onOpenMusic: () -> Unit,
+) {
+  val journals by viewModel.journals.collectAsStateWithLifecycle()
+  val letters by viewModel.letters.collectAsStateWithLifecycle()
+  val moods by viewModel.moods.collectAsStateWithLifecycle()
+  val reflectionAnswers by viewModel.reflectionAnswers.collectAsStateWithLifecycle()
+  val capsules by viewModel.timeCapsules.collectAsStateWithLifecycle()
+  val sharedReflections by viewModel.sharedReflections.collectAsStateWithLifecycle()
+  val aiReflectionState by viewModel.aiReflectionState.collectAsStateWithLifecycle()
+  RefleksiScreen(
+    journals = journals,
+    letters = letters,
+    moods = moods,
+    reflectionAnswers = reflectionAnswers,
+    capsules = capsules,
+    onSaveJournal = viewModel::saveJournal,
+    onDeleteJournal = viewModel::deleteJournal,
+    onSaveLetter = viewModel::saveLetter,
+    onDeleteLetter = viewModel::deleteLetter,
+    onRecordMood = viewModel::recordMood,
+    onSaveReflectionAnswer = viewModel::saveReflectionAnswer,
+    onCreateTimeCapsule = viewModel::createTimeCapsule,
+    onReadEnforcedCapsule = viewModel::readEnforcedCapsule,
+    onOpenMusic = onOpenMusic,
+    sharedReflections = sharedReflections,
+    currentUid = currentUid,
+    aiConsentGranted = aiConsentGranted,
+    aiReflectionState = aiReflectionState,
+    onGenerateAiReflection = viewModel::generateAiReflectionInsight,
+  )
+}
+
+@Composable
+private fun ProfilTabHost(
+  viewModel: EvoriaViewModel,
+  currentUid: String,
+  userProfile: com.example.data.remote.UserProfileDto?,
+  fallbackName: String,
+  activeCouple: com.example.data.remote.CoupleConnectionDto?,
+  userPrefs: com.example.data.local.AppUserPrefs,
+  securitySettings: com.example.data.local.SecuritySettings,
+  onOpenConnectPartner: () -> Unit,
+  onOpenShareInbox: () -> Unit,
+  onOpenNotifications: () -> Unit,
+  onOpenMusic: () -> Unit,
+  onOpenUploadQueue: () -> Unit,
+  onOpenSecurity: () -> Unit,
+  onOpenBackupStorage: () -> Unit,
+  onOpenLiquidGlassShowcase: () -> Unit,
+  onOpenAppearanceSettings: () -> Unit,
+  onOpenAbout: () -> Unit,
+  onSignOut: () -> Unit,
+) {
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val journals by viewModel.journals.collectAsStateWithLifecycle()
+  val capsules by viewModel.timeCapsules.collectAsStateWithLifecycle()
+  val shareRequests by viewModel.shareRequests.collectAsStateWithLifecycle()
+  val localNotifications by viewModel.localNotifications.collectAsStateWithLifecycle()
+  val remoteNotifications by viewModel.remoteNotifications.collectAsStateWithLifecycle()
+  val localStorageLabel by viewModel.localStorageLabel.collectAsStateWithLifecycle()
+  val unreadNotifs =
+    remember(localNotifications, remoteNotifications) {
+      localNotifications.count { !it.isRead } + remoteNotifications.count { !it.isRead }
+    }
+  val pendingSharesCount =
+    remember(shareRequests, currentUid) {
+      shareRequests.count { it.status == "pending" && it.recipientUid == currentUid }
+    }
+  ProfilScreen(
+    currentUid = currentUid,
+    profile = userProfile,
+    fallbackName = fallbackName,
+    couple = activeCouple,
+    albumCount = albums.size,
+    memoryCount = memories.size,
+    journalCount = journals.size,
+    capsuleCount = capsules.size,
+    pendingShareRequestsCount = pendingSharesCount,
+    unreadNotificationCount = unreadNotifs,
+    localStorageLabel = localStorageLabel,
+    userPrefs = userPrefs,
+    securitySettings = securitySettings,
+    onSetThemeMode = viewModel::setThemeMode,
+    onSetAccentPreset = viewModel::setAccentPreset,
+    onSetNavbarThemeStyle = viewModel::setNavbarThemeStyle,
+    onSetNavbarGlassIntensity = viewModel::setNavbarGlassIntensity,
+    onSetReducedMotion = viewModel::setReducedMotion,
+    onSetLock60Fps = viewModel::setLock60Fps,
+    onSaveProfile = viewModel::saveProfileSetup,
+    onDeleteAllLocalData = viewModel::clearAllLocalData,
+    onOpenConnectPartner = onOpenConnectPartner,
+    onOpenShareInbox = onOpenShareInbox,
+    onOpenNotifications = onOpenNotifications,
+    onOpenMusic = onOpenMusic,
+    onOpenUploadQueue = onOpenUploadQueue,
+    onOpenSecurity = onOpenSecurity,
+    onOpenBackupStorage = onOpenBackupStorage,
+    onOpenLiquidGlassShowcase = onOpenLiquidGlassShowcase,
+    onOpenAppearanceSettings = onOpenAppearanceSettings,
+    onOpenAbout = onOpenAbout,
+    onPickProfileBanner = viewModel::saveProfileBanner,
+    onResetProfileBanner = viewModel::clearProfileBanner,
+    onSignOut = onSignOut,
+  )
+}
+
+@Composable
+private fun AlbumDetailRouteHost(
+  viewModel: EvoriaViewModel,
+  albumId: String,
+  onBack: () -> Unit,
+  onOpenMemory: (String) -> Unit,
+) {
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val album = remember(albums, albumId) { albums.firstOrNull { it.id == albumId } }
+  val albumMemories = remember(memories, albumId) { memories.filter { it.albumId == albumId } }
+  if (album == null) {
+    LaunchedEffect(Unit) { onBack() }
+  } else {
+    AlbumDetailScreen(
+      album = album,
+      memories = albumMemories,
+      onBack = onBack,
+      onOpenMemory = onOpenMemory,
+      onEditAlbum = { t, d, v, s, c ->
+        viewModel.createOrUpdateAlbum(album.id, t, d, v, s, c, album.coverUri)
+      },
+      onDeleteAlbum = {
+        viewModel.deleteAlbum(album.id)
+        onBack()
+      },
+    )
+  }
+}
+
+@Composable
+private fun MemoryDetailRouteHost(
+  viewModel: EvoriaViewModel,
+  memoryId: String,
+  onBack: () -> Unit,
+  onEdit: () -> Unit,
+  onOpenFullscreenPhoto: (String, String, String) -> Unit,
+  onOpenFullscreenVideo: (String) -> Unit,
+) {
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val mem = remember(memories, memoryId) { memories.firstOrNull { it.id == memoryId } }
+  val albumTitle = remember(albums, mem?.albumId) { albums.firstOrNull { it.id == mem?.albumId }?.title }
+  if (mem == null) {
+    LaunchedEffect(Unit) { onBack() }
+  } else {
+    MemoryDetailScreen(
+      memory = mem,
+      albumTitle = albumTitle,
+      onBack = onBack,
+      onToggleFavorite = { viewModel.toggleMemoryFavorite(mem) },
+      onEdit = onEdit,
+      onDelete = {
+        viewModel.deleteMemory(mem)
+        onBack()
+      },
+      onSendEvoriaShare = { viewModel.sendShareRequestToPartner(mem) },
+      onOpenFullscreenPhoto = {
+        mem.mediaUri?.let { uri -> onOpenFullscreenPhoto(uri, mem.title, mem.id) }
+      },
+      onOpenFullscreenVideo = {
+        mem.mediaUri?.let { uri -> onOpenFullscreenVideo(uri) }
+      },
+    )
+  }
+}
+
+@Composable
+private fun FullscreenPhotoRouteHost(
+  viewModel: EvoriaViewModel,
+  mediaUri: String,
+  title: String,
+  memoryId: String?,
+  onEdit: (String) -> Unit,
+  onBack: () -> Unit,
+) {
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val mem = remember(memories, memoryId) { memoryId?.let { id -> memories.firstOrNull { it.id == id } } }
+  val albumTitle = remember(albums, mem?.albumId) { albums.firstOrNull { it.id == mem?.albumId }?.title }
+  FullscreenPhotoViewer(
+    mediaUri = mediaUri,
+    title = title,
+    memory = mem,
+    albumTitle = albumTitle,
+    onToggleFavorite = mem?.let { { viewModel.toggleMemoryFavorite(it) } },
+    onEdit = mem?.let { { onEdit(it.id) } },
+    onDelete = mem?.let { { viewModel.deleteMemory(it) } },
+    onBack = onBack,
+  )
+}
+
+@Composable
+private fun AddOrEditMemoryRouteHost(
+  viewModel: EvoriaViewModel,
+  memoryId: String?,
+  aiConsentGranted: Boolean,
+  onBack: () -> Unit,
+) {
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val aiMemoryDraftState by viewModel.aiMemoryDraftState.collectAsStateWithLifecycle()
+  val existing: LocalMemoryEntity? =
+    remember(memories, memoryId) { memoryId?.let { id -> memories.firstOrNull { it.id == id } } }
+  AddOrEditMemoryScreen(
+    existing = existing,
+    albums = albums,
+    aiDraftState = aiMemoryDraftState,
+    aiConsentGranted = aiConsentGranted,
+    onGenerateAiDraft = viewModel::generateAiMemoryStory,
+    onClearAiDraft = viewModel::clearAiMemoryDraftState,
+    onBack = {
+      viewModel.clearAiMemoryDraftState()
+      onBack()
+    },
+    onSaveMediaMemories = { uris, title, caption, story, location, albumId, visibility, tagsCsv ->
+      viewModel.saveNewMemoriesFromUris(
+        uris = uris,
+        titlePrefix = title,
+        caption = caption,
+        story = story,
+        locationName = location,
+        albumId = albumId,
+        visibility = visibility,
+        tagsCsv = tagsCsv,
+        onDone = {
+          viewModel.clearAiMemoryDraftState()
+          onBack()
+        },
+      )
+    },
+    onSaveStoryOnly = { ex, title, caption, story, location, albumId, visibility, tagsCsv ->
+      viewModel.saveStoryOnlyMemory(
+        existing = ex,
+        title = title,
+        caption = caption,
+        story = story,
+        locationName = location,
+        albumId = albumId,
+        visibility = visibility,
+        tagsCsv = tagsCsv,
+      )
+      viewModel.clearAiMemoryDraftState()
+      onBack()
+    },
+  )
+}
+
+@Composable
+private fun UploadQueueRouteHost(
+  viewModel: EvoriaViewModel,
+  onBack: () -> Unit,
+) {
+  val uploadJobs by viewModel.uploadJobs.collectAsStateWithLifecycle()
+  val memories by viewModel.localMemories.collectAsStateWithLifecycle()
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  UploadQueueScreen(
+    jobs = uploadJobs,
+    memories = memories,
+    albums = albums,
+    onRetry = viewModel::retryUploadJob,
+    onDelete = viewModel::deleteUploadJob,
+    onBack = onBack,
+  )
+}
+
+@Composable
+private fun ConnectPartnerRouteHost(
+  viewModel: EvoriaViewModel,
+  currentUid: String,
+  activeCouple: com.example.data.remote.CoupleConnectionDto?,
+  initialCodeFromDeepLink: String?,
+  onClearDeepLink: () -> Unit,
+  onBack: () -> Unit,
+) {
+  val generatedInvitation by viewModel.generatedInvitation.collectAsStateWithLifecycle()
+  val myInvitations by viewModel.myInvitations.collectAsStateWithLifecycle()
+  val lookedUpInvitation by viewModel.lookedUpInvitation.collectAsStateWithLifecycle()
+  val inviteLoading by viewModel.inviteLoading.collectAsStateWithLifecycle()
+  val inviteError by viewModel.inviteActionError.collectAsStateWithLifecycle()
+  PartnerConnectionScreen(
+    currentUid = currentUid,
+    couple = activeCouple,
+    generatedInvitation = generatedInvitation,
+    myInvitations = myInvitations,
+    lookedUpInvitation = lookedUpInvitation,
+    inviteLoading = inviteLoading,
+    inviteError = inviteError,
+    initialCodeFromDeepLink = initialCodeFromDeepLink,
+    onGenerateCode = viewModel::generatePartnerCode,
+    onCancelInvitation = viewModel::cancelInvitation,
+    onLookupCode = viewModel::lookupInvitationCode,
+    onAcceptInvitation = viewModel::acceptLookedUpInvitation,
+    onDeclineInvitation = viewModel::declineLookedUpInvitation,
+    onClearLookup = {
+      onClearDeepLink()
+      viewModel.clearLookedUpInvitation()
+    },
+    onDisconnectCouple = viewModel::disconnectCouple,
+    onBack = onBack,
+  )
+}
+
+@Composable
+private fun ShareInboxRouteHost(
+  viewModel: EvoriaViewModel,
+  currentUid: String,
+  onOpenFullPlayer: () -> Unit,
+  onBack: () -> Unit,
+) {
+  val shareRequests by viewModel.shareRequests.collectAsStateWithLifecycle()
+  val sharedMusic by viewModel.sharedMusic.collectAsStateWithLifecycle()
+  ShareInboxScreen(
+    currentUid = currentUid,
+    requests = shareRequests,
+    sharedMusic = sharedMusic,
+    onAccept = { viewModel.respondShareRequest(it, accept = true) },
+    onDecline = { viewModel.respondShareRequest(it, accept = false) },
+    onRevoke = viewModel::revokeShareRequest,
+    onAcceptSharedMusic = { item, playNow ->
+      viewModel.respondSharedMusic(item, accept = true, playImmediately = playNow)
+      if (playNow) onOpenFullPlayer()
+    },
+    onDeclineSharedMusic = { item ->
+      viewModel.respondSharedMusic(item, accept = false)
+    },
+    onBack = onBack,
+  )
+}
+
+@Composable
+private fun NotificationsRouteHost(
+  viewModel: EvoriaViewModel,
+  userPrefs: com.example.data.local.AppUserPrefs,
+  onBack: () -> Unit,
+) {
+  val localNotifications by viewModel.localNotifications.collectAsStateWithLifecycle()
+  val remoteNotifications by viewModel.remoteNotifications.collectAsStateWithLifecycle()
+  NotificationCenterScreen(
+    localNotifications = localNotifications,
+    remoteNotifications = remoteNotifications,
+    userPrefs = userPrefs,
+    onUpdatePrefs = viewModel::updateNotificationPrefs,
+    onMarkAllRead = viewModel::markAllNotificationsRead,
+    onBack = onBack,
+  )
+}
+
+@Composable
+private fun StorageBackupRouteHost(
+  viewModel: EvoriaViewModel,
+  onBack: () -> Unit,
+) {
+  val localStorageLabel by viewModel.localStorageLabel.collectAsStateWithLifecycle()
+  val syncCheckpoint by viewModel.syncCheckpoint.collectAsStateWithLifecycle()
+  StorageAndBackupScreen(
+    localStorageLabel = localStorageLabel,
+    checkpoint = syncCheckpoint,
+    onBackupToCloud = { viewModel.backupMetadataToCloud() },
+    onRestoreFromCloud = viewModel::restoreLatestCloudBackup,
+    onGenerateExportJson = viewModel::generateExportJson,
+    onDeleteAllLocalData = viewModel::clearAllLocalData,
+    onBack = onBack,
+  )
+}
+
+@Composable
 private fun EvoriaFloatingMiniPlayerOverlay(
   viewModel: EvoriaViewModel,
   onOpenFullPlayer: () -> Unit,
@@ -849,7 +1378,7 @@ private fun EvoriaFloatingMiniPlayerOverlay(
     EvoriaMiniPlayerBar(
       playerState = playerState,
       onTogglePlay = { viewModel.playerManager.togglePlayPause() },
-      onNext = { viewModel.playerManager.next() },
+      onNext = viewModel::playNextTrack,
       onOpenFullPlayer = onOpenFullPlayer,
     )
     Spacer(modifier = Modifier.height(6.dp))
@@ -859,15 +1388,17 @@ private fun EvoriaFloatingMiniPlayerOverlay(
 @Composable
 private fun EvoriaMusicRouteContent(
   viewModel: EvoriaViewModel,
-  playlists: List<com.example.data.local.PlaylistEntity>,
-  tracks: List<com.example.data.local.TrackEntity>,
-  albums: List<com.example.data.local.LocalAlbumEntity>,
-  spotifyImportState: com.example.ui.SpotifyImportUiState,
-  matchingYouTubePlaylistId: String?,
+  hasConnectedPartner: Boolean,
   onOpenFullPlayer: () -> Unit,
   onBack: () -> Unit,
 ) {
+  val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+  val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+  val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
+  val spotifyImportState by viewModel.spotifyImportState.collectAsStateWithLifecycle()
+  val matchingYouTubePlaylistId by viewModel.youtubeMatchingPlaylistId.collectAsStateWithLifecycle()
   val playerState by viewModel.playerState.collectAsStateWithLifecycle()
+  val youtubeDirectSearchState by viewModel.youtubeDirectSearchState.collectAsStateWithLifecycle()
   MusicAndSoundtrackScreen(
     playlists = playlists,
     tracks = tracks,
@@ -875,12 +1406,23 @@ private fun EvoriaMusicRouteContent(
     playerState = playerState,
     spotifyImportState = spotifyImportState,
     matchingYouTubePlaylistId = matchingYouTubePlaylistId,
+    youtubeDirectSearchState = youtubeDirectSearchState,
+    hasConnectedPartner = hasConnectedPartner,
+    onSearchYouTubeDirect = viewModel::searchYouTubeDirect,
+    onClearYouTubeDirectSearch = viewModel::clearYouTubeDirectSearch,
+    onPlayYouTubeMatchDirectly = viewModel::playYouTubeMatchDirectly,
     onCreatePlaylist = viewModel::createPlaylist,
     onDeletePlaylist = viewModel::deletePlaylist,
     onImportSpotifyPlaylist = viewModel::importSpotifyPlaylist,
     onResetSpotifyImport = viewModel::resetSpotifyImportState,
     onMatchPlaylistWithYouTube = viewModel::matchPlaylistTracksWithYouTube,
-    onMatchTrackWithYouTube = viewModel::matchSingleTrackWithYouTube,
+    onMatchTrackWithYouTube = { track ->
+      viewModel.matchSingleTrackWithYouTube(
+        track = track,
+        playImmediately = true,
+        onReadyToOpenPlayer = onOpenFullPlayer,
+      )
+    },
     onAddAudioTrack = { plId, title, artist, uri ->
       viewModel.addLocalAudioTrack(plId, title, artist, uri, null)
     },
@@ -889,6 +1431,8 @@ private fun EvoriaMusicRouteContent(
     onMoveTrackOrder = viewModel::moveTrackOrder,
     onDeleteTrack = viewModel::deleteTrack,
     onPlayTrack = viewModel::playPlaylistTrack,
+    onSendPlaylistToPartner = viewModel::sendPlaylistToPartner,
+    onSendTrackToPartner = viewModel::sendTrackToPartner,
     onOpenFullPlayer = onOpenFullPlayer,
     onBack = onBack,
   )
@@ -897,6 +1441,7 @@ private fun EvoriaMusicRouteContent(
 @Composable
 private fun EvoriaFullMusicPlayerRouteContent(
   viewModel: EvoriaViewModel,
+  onYouTubeSlotBounds: (Rect?) -> Unit,
   onBack: () -> Unit,
 ) {
   val playerState by viewModel.playerState.collectAsStateWithLifecycle()
@@ -906,11 +1451,12 @@ private fun EvoriaFullMusicPlayerRouteContent(
     onYouTubePlaybackUpdate = viewModel.playerManager::onYouTubePlaybackUpdate,
     onYouTubeVideoEnded = viewModel.playerManager::onYouTubeVideoEnded,
     onYouTubePlayerError = viewModel.playerManager::onYouTubePlayerError,
-    onLeavingYouTubePlayer = viewModel.playerManager::pauseYouTubeIfLeavingPlayer,
+    hostPersistentYouTubeOverlay = true,
+    onYouTubeSlotBounds = onYouTubeSlotBounds,
     onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
     onSeekTo = { viewModel.playerManager.seekTo(it) },
-    onNext = { viewModel.playerManager.next() },
-    onPrevious = { viewModel.playerManager.previous() },
+    onNext = viewModel::playNextTrack,
+    onPrevious = viewModel::playPreviousTrack,
     onBack = onBack,
   )
 }

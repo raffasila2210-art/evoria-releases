@@ -197,3 +197,200 @@ test("Shared memories: accessible to linked couple, denied to outsider", async (
     malloryDb.collection("couples").doc("couple_1").collection("shared_memories").doc("mem_1").get()
   );
 });
+
+test("Shared reflections: partner can read, only author can update allowed fields, sealed capsule unlockAtMillis immutable, outsider denied", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const malloryDb = testEnv.authenticatedContext(MALLORY_UID).firestore();
+  const now = pastTs();
+  const futureUnlock = Date.now() + 7 * 86400000;
+
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").set({
+      memberUids: [ALICE_UID, BOB_UID],
+      memberOneUid: ALICE_UID,
+      memberTwoUid: BOB_UID,
+      memberOneName: "Nadia",
+      memberTwoName: "Raffa",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Alice creates a shared journal reflection
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").collection("shared_reflections").doc("ref_j1").set({
+      authorUid: ALICE_UID,
+      authorName: "Nadia",
+      memberUids: [ALICE_UID, BOB_UID],
+      kind: "journal",
+      title: "Catatan Hujan",
+      body: "Hari ini terasa tenang berdua.",
+      isSealed: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Bob can query shared reflections as couple member
+  await assertSucceeds(
+    bobDb.collection("couples").doc("couple_1").collection("shared_reflections").where("memberUids", "array-contains", BOB_UID).get()
+  );
+
+  // Alice can update restricted fields (title, body, updatedAt)
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").collection("shared_reflections").doc("ref_j1").update({
+      title: "Catatan Hujan Sore",
+      body: "Hari ini terasa sangat hangat berdua.",
+      updatedAt: pastTs(),
+    })
+  );
+
+  // Partner Bob cannot edit Alice's reflection
+  await assertFails(
+    bobDb.collection("couples").doc("couple_1").collection("shared_reflections").doc("ref_j1").update({
+      body: "Diubah oleh partner",
+      updatedAt: pastTs(),
+    })
+  );
+
+  // Sealed time capsule unlockAtMillis cannot be shortened
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").collection("shared_reflections").doc("ref_cap1").set({
+      authorUid: ALICE_UID,
+      authorName: "Nadia",
+      memberUids: [ALICE_UID, BOB_UID],
+      kind: "capsule",
+      title: "Untuk Anniversary",
+      body: "Semoga kita tetap saling menjaga.",
+      unlockAtMillis: futureUnlock,
+      isSealed: true,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  await assertFails(
+    aliceDb.collection("couples").doc("couple_1").collection("shared_reflections").doc("ref_cap1").update({
+      unlockAtMillis: Date.now() - 1000,
+      updatedAt: pastTs(),
+    })
+  );
+
+  // Stranger Mallory cannot read or write
+  await assertFails(
+    malloryDb.collection("couples").doc("couple_1").collection("shared_reflections").doc("ref_j1").get()
+  );
+});
+
+test("Couple notifications: actor creates, only recipient can mark read, outsider denied", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const malloryDb = testEnv.authenticatedContext(MALLORY_UID).firestore();
+  const now = pastTs();
+
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").set({
+      memberUids: [ALICE_UID, BOB_UID],
+      memberOneUid: ALICE_UID,
+      memberTwoUid: BOB_UID,
+      memberOneName: "Nadia",
+      memberTwoName: "Raffa",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Alice sends notification to Bob
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").collection("notifications").doc("notif_1").set({
+      recipientUid: BOB_UID,
+      actorUid: ALICE_UID,
+      memberUids: [ALICE_UID, BOB_UID],
+      kind: "memory",
+      title: "Kenangan Baru",
+      body: "Nadia membagikan foto Senja di Ancol.",
+      isRead: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Bob can query and mark notification as read
+  await assertSucceeds(
+    bobDb.collection("couples").doc("couple_1").collection("notifications").where("memberUids", "array-contains", BOB_UID).get()
+  );
+  await assertSucceeds(
+    bobDb.collection("couples").doc("couple_1").collection("notifications").doc("notif_1").update({
+      isRead: true,
+      updatedAt: pastTs(),
+    })
+  );
+
+  // Actor Alice cannot mutate recipient's read status
+  await assertFails(
+    aliceDb.collection("couples").doc("couple_1").collection("notifications").doc("notif_1").update({
+      isRead: false,
+      updatedAt: pastTs(),
+    })
+  );
+
+  // Outsider cannot read
+  await assertFails(
+    malloryDb.collection("couples").doc("couple_1").collection("notifications").doc("notif_1").get()
+  );
+});
+
+test("Shared music / playlists: couple sends, recipient accepts, outsider denied", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const malloryDb = testEnv.authenticatedContext(MALLORY_UID).firestore();
+  const now = pastTs();
+
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").set({
+      memberUids: [ALICE_UID, BOB_UID],
+      memberOneUid: ALICE_UID,
+      memberTwoUid: BOB_UID,
+      memberOneName: "Nadia",
+      memberTwoName: "Raffa",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    aliceDb.collection("couples").doc("couple_1").collection("shared_music").doc("smus_1").set({
+      senderUid: ALICE_UID,
+      senderName: "Nadia",
+      recipientUid: BOB_UID,
+      memberUids: [ALICE_UID, BOB_UID],
+      kind: "playlist",
+      title: "Malam Tenang Berdua",
+      subtitle: "4 lagu pilihan",
+      tracksJson: JSON.stringify([{ title: "Hujan Sore", artist: "Efek Rumah Kaca" }]),
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Recipient Bob can query & accept
+  await assertSucceeds(
+    bobDb.collection("couples").doc("couple_1").collection("shared_music").where("memberUids", "array-contains", BOB_UID).get()
+  );
+  await assertSucceeds(
+    bobDb.collection("couples").doc("couple_1").collection("shared_music").doc("smus_1").update({
+      status: "accepted",
+      updatedAt: pastTs(),
+    })
+  );
+
+  // Outsider cannot read or write
+  await assertFails(
+    malloryDb.collection("couples").doc("couple_1").collection("shared_music").doc("smus_1").get()
+  );
+});

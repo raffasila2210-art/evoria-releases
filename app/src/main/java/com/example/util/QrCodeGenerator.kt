@@ -26,4 +26,19 @@ object QrCodeGenerator {
       }
       .getOrNull()
   }
+
+  fun extractInviteCode(rawQrText: String?): String? {
+    val clean = rawQrText?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    if (clean.contains("evoria://", ignoreCase = true) || clean.contains("code=", ignoreCase = true)) {
+      val uri = runCatching { android.net.Uri.parse(clean) }.getOrNull()
+      val paramCode = uri?.getQueryParameter("code")?.trim()?.uppercase()
+      if (!paramCode.isNullOrBlank() && paramCode.all { it.isLetterOrDigit() } && paramCode.length in 4..16) {
+        return paramCode
+      }
+      val regexMatch = Regex("code=([A-Za-z0-9]{4,16})").find(clean)?.groupValues?.getOrNull(1)
+      if (!regexMatch.isNullOrBlank()) return regexMatch.uppercase()
+    }
+    val upper = clean.uppercase()
+    return if (upper.length in 4..16 && upper.all { it.isLetterOrDigit() }) upper else null
+  }
 }
