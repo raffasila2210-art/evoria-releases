@@ -195,26 +195,32 @@ class EvoriaCloudRepository(
   suspend fun disconnectCouple(coupleId: String): Result<Unit> = runCatching {
     val uid = requireUserId()
     val docRef = db.collection("couples").document(coupleId)
+    val userRef = db.collection("users").document(uid)
     try {
-      docRef
-        .update(
-          mapOf(
-            "status" to "disconnected",
-            "updatedAt" to FieldValue.serverTimestamp(),
+      val coupleSnap = docRef.get().await()
+      if (coupleSnap.exists() && coupleSnap.getString("status") == "active") {
+        docRef
+          .update(
+            mapOf(
+              "status" to "disconnected",
+              "updatedAt" to FieldValue.serverTimestamp(),
+            )
           )
-        )
-        .await()
-      db.collection("users")
-        .document(uid)
-        .update(
-          mapOf(
-            "coupleId" to null,
-            "partnerUid" to null,
-            "partnerDisplayName" to null,
-            "updatedAt" to FieldValue.serverTimestamp(),
+          .await()
+      }
+      val userSnap = userRef.get().await()
+      if (userSnap.exists()) {
+        userRef
+          .update(
+            mapOf(
+              "coupleId" to null,
+              "partnerUid" to null,
+              "partnerDisplayName" to null,
+              "updatedAt" to FieldValue.serverTimestamp(),
+            )
           )
-        )
-        .await()
+          .await()
+      }
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {

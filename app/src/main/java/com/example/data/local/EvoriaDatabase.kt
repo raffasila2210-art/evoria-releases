@@ -22,8 +22,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     TrackEntity::class,
     LocalNotificationEntity::class,
     SyncCheckpointEntity::class,
+    PhotoEmbeddingEntity::class,
   ],
-  version = 6,
+  version = 7,
   exportSchema = false,
 )
 abstract class EvoriaDatabase : RoomDatabase() {
@@ -96,6 +97,31 @@ abstract class EvoriaDatabase : RoomDatabase() {
         }
       }
 
+    internal val MIGRATION_6_7 =
+      object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+          db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS photo_embeddings (
+              memoryId TEXT NOT NULL PRIMARY KEY,
+              ownerUid TEXT NOT NULL,
+              fileUri TEXT NOT NULL,
+              embeddingBlob BLOB NOT NULL,
+              embeddingDim INTEGER NOT NULL,
+              modelVersion TEXT NOT NULL,
+              indexStatus TEXT NOT NULL,
+              contentSignature TEXT NOT NULL,
+              indexedAtMillis INTEGER NOT NULL,
+              lastError TEXT
+            )
+            """.trimIndent()
+          )
+          db.execSQL("CREATE INDEX IF NOT EXISTS index_photo_embeddings_ownerUid ON photo_embeddings(ownerUid)")
+          db.execSQL("CREATE INDEX IF NOT EXISTS index_photo_embeddings_indexStatus ON photo_embeddings(indexStatus)")
+          db.execSQL("CREATE INDEX IF NOT EXISTS index_photo_embeddings_modelVersion ON photo_embeddings(modelVersion)")
+        }
+      }
+
     fun getInstance(context: Context): EvoriaDatabase {
       return INSTANCE
         ?: synchronized(this) {
@@ -111,6 +137,7 @@ abstract class EvoriaDatabase : RoomDatabase() {
                 MIGRATION_3_4,
                 MIGRATION_4_5,
                 MIGRATION_5_6,
+                MIGRATION_6_7,
               )
               .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
               .fallbackToDestructiveMigration(dropAllTables = true)

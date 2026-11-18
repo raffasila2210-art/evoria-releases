@@ -69,6 +69,7 @@ import com.example.data.local.SecurityPreferences
 import com.example.data.local.ThemeMode
 import com.example.data.remote.EvoriaCloudRepository
 import com.example.media.EvoriaPlayerManager
+import com.example.ml.EvoriaVisionRuntime
 import com.example.notifications.EvoriaNotificationHelper
 import com.example.ui.EvoriaViewModel
 import com.example.ui.components.CloudBloomOverlay
@@ -205,7 +206,16 @@ class MainActivity : FragmentActivity() {
                     val dao = EvoriaDatabase.getInstance(appCtx).evoriaDao()
                     val localRepo = EvoriaSanctuaryRepository(appCtx, dao)
                     val cloudRepo = EvoriaCloudRepository(appCtx)
-                    val searchEngine = EvoriaSearchEngine(appCtx)
+                    val modelManager = EvoriaVisionRuntime.modelManager(appCtx)
+                    val embeddingEngine = EvoriaVisionRuntime.embeddingEngine(appCtx)
+                    val searchEngine =
+                      EvoriaSearchEngine(
+                        context = appCtx,
+                        embeddingEngine = embeddingEngine,
+                        modelManager = modelManager,
+                        sanctuaryRepo = localRepo,
+                        ownerUidProvider = { user.uid },
+                      )
                     val playerManager = EvoriaPlayerManager(appCtx)
                     EvoriaViewModel(
                       currentUserId = user.uid,
@@ -217,6 +227,8 @@ class MainActivity : FragmentActivity() {
                       playerManager = playerManager,
                       currentUserEmail = user.email,
                       appContext = appCtx,
+                      modelManager = modelManager,
+                      embeddingEngine = embeddingEngine,
                     )
                   }
                 },
@@ -755,6 +767,11 @@ private fun EvoriaAuthenticatedShell(
           userPrefs = userPrefs,
           currentUserEmail = currentUserEmail,
           onSaveDeveloperSocials = viewModel::updateDeveloperSocials,
+          onSaveDeveloperAboutInfo = viewModel::updateDeveloperAboutProfile,
+          onPickDeveloperBackground = viewModel::saveDeveloperBackground,
+          onResetDeveloperBackground = viewModel::clearDeveloperBackground,
+          onPickDeveloperAvatar = viewModel::saveDeveloperAvatar,
+          onResetDeveloperAvatar = viewModel::clearDeveloperAvatar,
           onBack = { currentRoute = EvoriaRoute.MainTabs },
         )
       }
@@ -977,6 +994,9 @@ private fun JelajahTabHost(
   val memories by viewModel.localMemories.collectAsStateWithLifecycle()
   val albums by viewModel.localAlbums.collectAsStateWithLifecycle()
   val searchState by viewModel.searchState.collectAsStateWithLifecycle()
+  val modelState by viewModel.modelState.collectAsStateWithLifecycle()
+  val indexingStats by viewModel.indexingStats.collectAsStateWithLifecycle()
+  val isIndexingPhotos by viewModel.isIndexingPhotos.collectAsStateWithLifecycle()
   JelajahScreen(
     memories = memories,
     albums = albums,
@@ -987,6 +1007,14 @@ private fun JelajahTabHost(
     onRunSearch = viewModel::runSearch,
     onClearHistory = viewModel::clearSearchHistory,
     onOpenMemory = onOpenMemory,
+    modelState = modelState,
+    indexingStats = indexingStats,
+    isIndexingPhotos = isIndexingPhotos,
+    onDownloadModel = viewModel::downloadVisionModel,
+    onCancelModelDownload = viewModel::cancelVisionModelDownload,
+    onDeleteModel = viewModel::deleteVisionModel,
+    onTriggerIndexing = viewModel::triggerPhotoIndexing,
+    onClearSearchState = viewModel::clearSearchState,
   )
 }
 

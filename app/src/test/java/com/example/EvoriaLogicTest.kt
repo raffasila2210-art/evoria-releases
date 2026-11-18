@@ -5,10 +5,15 @@ import android.content.Intent
 import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
@@ -24,7 +29,9 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.dp
 import com.example.data.ai.EvoriaSearchEngine
+import com.example.data.ai.SearchOutcome
 import com.example.data.local.AppUserPrefs
 import com.example.data.local.AutoLockTimeout
 import com.example.data.local.EvoriaAccentPreset
@@ -44,7 +51,9 @@ import com.example.data.local.ThemeMode
 import com.example.data.local.TimeCapsuleEntity
 import com.example.data.local.TrackEntity
 import com.example.data.local.UploadJobEntity
+import com.example.data.local.canEditAboutPage
 import com.example.data.local.canEditDeveloperSocials
+import com.example.data.remote.CoupleConnectionDto
 import com.example.data.remote.SharedMusicDto
 import com.example.data.remote.SharedReflectionDto
 import com.example.data.remote.SpotifyPlaylistImporter
@@ -74,6 +83,7 @@ import com.example.ui.screens.FullscreenPhotoViewer
 import com.example.ui.screens.JelajahScreen
 import com.example.ui.screens.KenanganScreen
 import com.example.ui.screens.MusicAndSoundtrackScreen
+import com.example.ui.screens.PartnerConnectionScreen
 import com.example.ui.screens.ProfilScreen
 import com.example.ui.screens.RefleksiScreen
 import com.example.ui.screens.ShareInboxScreen
@@ -1048,6 +1058,92 @@ class EvoriaLogicTest {
     composeRule.waitForIdle()
     composeRule.onNodeWithTag("about_edit_socials_button").assertDoesNotExist()
     composeRule.onNodeWithTag("about_socials_locked_badge").assertExists()
+    composeRule.onNodeWithTag("about_top_customize_button").assertDoesNotExist()
+    composeRule.onNodeWithTag("about_customize_banner_row").assertDoesNotExist()
+    composeRule.onNodeWithTag("about_edit_background_button").assertDoesNotExist()
+  }
+
+  @Test
+  fun aboutPageCustomization_persistsBackgroundAvatarAndInfoAndEnforcesAccess() = runBlocking {
+    assertTrue(canEditAboutPage("musyawalraffa@gmail.com"))
+    assertTrue(canEditAboutPage("MUSYAWALRAFFA@GMAIL.COM"))
+    assertFalse(canEditAboutPage("gptgo092009@gmail.com"))
+    assertFalse(canEditAboutPage(""))
+    assertFalse(canEditAboutPage(null))
+
+    val prefs = SecurityPreferences(context)
+    prefs.setDeveloperBackground("file:///data/user/0/com.example/files/evoria_media/dev_bg.jpg", "photo")
+    prefs.setDeveloperAvatar("file:///data/user/0/com.example/files/evoria_media/dev_avatar.jpg")
+    prefs.updateDeveloperAboutInfo(
+      displayName = "RAFFA.DEV",
+      roleLabel = "Kreator EVORIA",
+      useBackgroundAsPageBackdrop = true,
+    )
+
+    val loaded = prefs.userPrefsFlow.first()
+    assertEquals("file:///data/user/0/com.example/files/evoria_media/dev_bg.jpg", loaded.devBackgroundUri)
+    assertEquals("photo", loaded.devBackgroundType)
+    assertEquals("file:///data/user/0/com.example/files/evoria_media/dev_avatar.jpg", loaded.devAvatarUri)
+    assertEquals("RAFFA.DEV", loaded.devDisplayName)
+    assertEquals("Kreator EVORIA", loaded.devRoleLabel)
+    assertTrue(loaded.devUseBackgroundAsPageBackdrop)
+
+    prefs.clearDeveloperBackground()
+    prefs.clearDeveloperAvatar()
+    val cleared = prefs.userPrefsFlow.first()
+    assertNull(cleared.devBackgroundUri)
+    assertEquals("", cleared.devBackgroundType)
+    assertFalse(cleared.devUseBackgroundAsPageBackdrop)
+    assertNull(cleared.devAvatarUri)
+  }
+
+  @Test
+  fun aboutEvoriaScreen_developerCustomizeControlsUpdateHeroInfoAndPageBackdrop() {
+    var savedName: String? = null
+    var savedRole: String? = null
+    var savedUsePageBg: Boolean? = null
+
+    composeRule.setContent {
+      EvoriaTheme {
+        AboutEvoriaScreen(
+          userPrefs =
+            AppUserPrefs(
+              devDisplayName = "RAFFA AULIA MUSYAWAL",
+              devRoleLabel = "Pengembang",
+              devBackgroundUri = "file:///tmp/dev_bg.jpg",
+              devBackgroundType = "photo",
+              devUseBackgroundAsPageBackdrop = false,
+            ),
+          currentUserEmail = "musyawalraffa@gmail.com",
+          onSaveDeveloperAboutInfo = { name, role, usePageBg ->
+            savedName = name
+            savedRole = role
+            savedUsePageBg = usePageBg
+          },
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("about_top_customize_button").assertExists()
+    composeRule.onNodeWithTag("about_customize_banner_row").assertExists()
+    composeRule.onNodeWithTag("about_edit_background_button").assertExists()
+    composeRule.onNodeWithTag("about_developer_avatar").assertExists()
+    composeRule.onNodeWithTag("about_developer_role").assertTextContains("Pengembang")
+
+    composeRule.onNodeWithTag("about_customize_banner_row").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("about_dialog_pick_bg").assertExists()
+    composeRule.onNodeWithTag("about_dialog_pick_avatar").assertExists()
+    composeRule.onNodeWithTag("about_use_page_bg_switch").performClick()
+    composeRule.onNodeWithTag("about_input_dev_name").performTextReplacement("RAFFA.DEV")
+    composeRule.onNodeWithTag("about_input_dev_role").performTextReplacement("Pengembang Utama")
+    composeRule.onNodeWithTag("about_social_save_button").performClick()
+    composeRule.waitForIdle()
+
+    assertEquals("RAFFA.DEV", savedName)
+    assertEquals("Pengembang Utama", savedRole)
+    assertEquals(true, savedUsePageBg)
   }
 
   @Test
@@ -2652,4 +2748,175 @@ class EvoriaLogicTest {
         .map { it.config.toString() }
     assertTrue("Expected '3 dipilih' but found: $summaryTexts", summaryTexts.any { it.contains("3 dipilih") })
   }
+
+  @Test
+  fun partnerConnectionScreen_lepaskanHubungan_opensConfirmationAndInvokesDisconnect() {
+    var disconnected = false
+    val activeCouple =
+      CoupleConnectionDto(
+        id = "cpl_1",
+        memberUids = listOf("u1", "u2"),
+        memberOneUid = "u1",
+        memberTwoUid = "u2",
+        memberOneName = "Raffa",
+        memberTwoName = "Pasangan",
+        status = "active",
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        PartnerConnectionScreen(
+          currentUid = "u1",
+          couple = activeCouple,
+          generatedInvitation = null,
+          myInvitations = emptyList(),
+          lookedUpInvitation = null,
+          inviteLoading = false,
+          inviteError = null,
+          initialCodeFromDeepLink = null,
+          onGenerateCode = {},
+          onCancelInvitation = {},
+          onLookupCode = {},
+          onAcceptInvitation = {},
+          onDeclineInvitation = {},
+          onClearLookup = {},
+          onDisconnectCouple = { disconnected = true },
+          onBack = {},
+        )
+      }
+    }
+
+    composeRule.onNodeWithTag("disconnect_couple_button").assertExists().performClick()
+    composeRule.waitForIdle()
+    assertFalse(disconnected)
+
+    composeRule.onNodeWithText("Lepaskan Hubungan?").assertExists()
+    composeRule.onNodeWithTag("confirm_disconnect_couple_button").assertExists().performClick()
+    composeRule.waitForIdle()
+    assertTrue(disconnected)
+  }
+
+  @Test
+  fun kenanganScreen_excludesGalleryPhotosAndSingleAlbumCollectionsFromKenanganTab() {
+    val now = 1_700_000_000_000L
+    val alb1 = LocalAlbumEntity("alb_k_1", "u1", "Pantai", "", null, "private", null, now, now)
+    val alb2 = LocalAlbumEntity("alb_k_2", "u1", "Gunung", "", null, "shared", null, now + 100L, now + 100L)
+    val galleryOnlyPhoto =
+      LocalMemoryEntity(
+        id = "mem_gallery_only",
+        ownerUid = "u1",
+        albumId = null,
+        title = "Foto Galeri Lepas",
+        mediaType = "photo",
+        mediaUri = "file:///tmp/gallery_photo.jpg",
+        visibility = "private",
+        memoryDateMillis = now,
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    val invalidSingleAlbumKenangan =
+      KenanganCollectionEntity(
+        id = "ken_single",
+        ownerUid = "u1",
+        title = "Kenangan Satu Album Saja",
+        description = "Tidak boleh tampil",
+        albumIdsCsv = "alb_k_1",
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    val validCombinedKenangan =
+      KenanganCollectionEntity(
+        id = "ken_combo",
+        ownerUid = "u1",
+        title = "Gabungan Pantai & Gunung",
+        description = "Gabungan dua album",
+        albumIdsCsv = "alb_k_1,alb_k_2",
+        createdAtMillis = now + 50L,
+        updatedAtMillis = now + 50L,
+      )
+
+    composeRule.setContent {
+      EvoriaTheme {
+        KenanganScreen(
+          albums = listOf(alb1, alb2),
+          memories = listOf(galleryOnlyPhoto),
+          kenanganCollections = listOf(invalidSingleAlbumKenangan, validCombinedKenangan),
+          onOpenAlbum = {},
+          onOpenMemory = {},
+          onOpenAddMemory = {},
+          onImportGalleryPhotos = {},
+          onSaveAlbum = { _, _, _, _, _, _, _ -> },
+          onToggleFavorite = {},
+          onDeleteMemories = {},
+        )
+      }
+    }
+
+    // Default Kenangan tab excludes gallery-only photos and single-album collections
+    composeRule.onNodeWithText("Gabungan Pantai & Gunung").assertExists()
+    composeRule.onNodeWithText("Kenangan Satu Album Saja").assertDoesNotExist()
+    composeRule.onNodeWithTag("memory_card_mem_gallery_only").assertDoesNotExist()
+
+    // Switching to Galeri tab still displays imported/unassigned gallery photos
+    composeRule.onNodeWithTag("kenangan_subtab_galeri").performClick()
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("memory_card_mem_gallery_only").assertExists()
+  }
+
+  @Test
+  fun jelajahScreen_searchButton_triggersSearchAndScrollsToResults() {
+    val now = 1_700_000_000_000L
+    val m1 =
+      LocalMemoryEntity(
+        id = "mem_jelajah_1",
+        ownerUid = "u1",
+        title = "Kucing Tidur",
+        caption = "Di sofa hangat",
+        mediaType = "story",
+        story = "Kucing tertidur pulas di ruang tamu.",
+        visibility = "private",
+        memoryDateMillis = now,
+        createdAtMillis = now,
+        updatedAtMillis = now,
+      )
+    var searchedQuery: String? = null
+    var searchState by mutableStateOf<SearchUiState>(SearchUiState.Idle)
+
+    composeRule.setContent {
+      EvoriaTheme {
+        Box(modifier = Modifier.height(520.dp)) {
+          JelajahScreen(
+            memories = listOf(m1),
+            albums = emptyList(),
+            searchHistory = listOf("pantai", "kopi"),
+            searchState = searchState,
+            onRunSearch = { q, _, _, _ ->
+              searchedQuery = q
+              searchState =
+                SearchUiState.Success(
+                  SearchOutcome(
+                    matchingMemoryIds = listOf("mem_jelajah_1"),
+                    usedCloudAi = false,
+                    explanation = "Ditemukan 1 momen cocok.",
+                    usedOnDeviceVision = false,
+                  )
+                )
+            },
+            onClearHistory = {},
+            onOpenMemory = {},
+          )
+        }
+      }
+    }
+
+    composeRule.onNodeWithTag("jelajah_search_input").performTextReplacement("kucing")
+    composeRule.waitForIdle()
+    composeRule.onNodeWithTag("jelajah_search_submit").performClick()
+    composeRule.mainClock.advanceTimeBy(1_000L)
+    composeRule.waitForIdle()
+
+    assertEquals("kucing", searchedQuery)
+    composeRule.onNodeWithTag("jelajah_results_section").assertIsDisplayed()
+  }
 }
+

@@ -761,7 +761,7 @@ fun RefleksiScreen(
             ) {
               Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = tokens.primaryTerracotta, modifier = Modifier.size(18.dp))
-                Text("Wawasan & Pertanyaan Gemini AI", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
+                Text("Wawasan & Pertanyaan Refleksi", style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
               }
               TextButton(
                 onClick = onGenerateAiReflection,
@@ -778,16 +778,14 @@ fun RefleksiScreen(
             when (aiReflectionState) {
               AiReflectionUiState.Idle -> {
                 Text(
-                  text =
-                    if (aiConsentGranted) "Ketuk 'Minta AI' untuk mendapatkan pertanyaan refleksi yang disesuaikan dengan suasana hatimu."
-                    else "Aktifkan izin Gemini AI di tab Jelajah untuk membuka wawasan refleksi emosional.",
+                  text = "Ketuk 'Minta AI' untuk mendapatkan wawasan & pertanyaan refleksi yang disesuaikan dengan suasana hatimu.",
                   style = MaterialTheme.typography.bodySmall,
                   color = tokens.mutedText,
                 )
               }
               AiReflectionUiState.Loading -> {
                 Text(
-                  text = "Gemini AI sedang membaca catatan suasana hatimu...",
+                  text = "Menyiapkan wawasan & pertanyaan refleksi...",
                   style = MaterialTheme.typography.bodySmall,
                   color = tokens.mutedText,
                 )

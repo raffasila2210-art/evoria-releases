@@ -37,6 +37,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -98,9 +99,13 @@ fun BerandaScreen(
     }
   }
   val userName = profile?.displayName?.ifBlank { fallbackName } ?: fallbackName
-  val partnerName = profile?.partnerDisplayName ?: couple?.let {
-    if (it.memberOneName == userName) it.memberTwoName else it.memberOneName
-  }
+  val partnerName =
+    if (couple != null) {
+      profile?.partnerDisplayName?.takeIf { it.isNotBlank() }
+        ?: if (couple.memberOneName == userName) couple.memberTwoName else couple.memberOneName
+    } else {
+      null
+    }
 
   val onThisDayMemories = remember(localMemories) {
     val today = Calendar.getInstance()
@@ -219,8 +224,8 @@ fun BerandaScreen(
             }
           }
         }
+        Spacer(modifier = Modifier.height(12.dp))
         if (couple == null) {
-          Spacer(modifier = Modifier.height(12.dp))
           Button(
             onClick = onOpenConnectPartner,
             shape = RoundedCornerShape(50),
@@ -228,6 +233,14 @@ fun BerandaScreen(
             modifier = Modifier.fillMaxWidth().testTag("beranda_connect_partner_button"),
           ) {
             Text("Hubungkan Pasangan")
+          }
+        } else {
+          OutlinedButton(
+            onClick = onOpenConnectPartner,
+            shape = RoundedCornerShape(50),
+            modifier = Modifier.fillMaxWidth().testTag("beranda_manage_partner_button"),
+          ) {
+            Text("Kelola Hubungan Pasangan", color = tokens.primaryTerracotta)
           }
         }
       }

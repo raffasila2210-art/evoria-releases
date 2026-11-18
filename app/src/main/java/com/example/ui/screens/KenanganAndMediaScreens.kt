@@ -52,6 +52,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -148,6 +149,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -690,12 +692,22 @@ fun KenanganScreen(
       }
     }
 
+  val keyboardController = LocalSoftwareKeyboardController.current
+  val scope = rememberCoroutineScope()
+  val kenanganListState = rememberLazyListState()
+  val albumGridState = rememberLazyGridState()
+  val galeriGridState = rememberLazyGridState()
+
   val filteredKenanganCollections =
     remember(kenanganCollections, searchQuery, filterMode, sortNewestFirst, albums) {
       val q = searchQuery.trim()
       val albumMap = albums.associateBy { it.id }
       val base =
         kenanganCollections.filter { col ->
+          // Kenangan hanya valid jika menggabungkan minimal 2 album yang berbeda;
+          // foto di Galeri tidak pernah otomatis masuk ke Kenangan.
+          val validAlbums = col.albumIdList().mapNotNull { albumMap[it] }.distinctBy { it.id }
+          if (validAlbums.size < 2) return@filter false
           val visOk =
             when (filterMode) {
               "private" -> col.visibility.equals("private", ignoreCase = true)
@@ -704,7 +716,7 @@ fun KenanganScreen(
             }
           if (!visOk) return@filter false
           if (q.isEmpty()) return@filter true
-          val albumTitles = col.albumIdList().mapNotNull { albumMap[it]?.title }.joinToString(" ")
+          val albumTitles = validAlbums.joinToString(" ") { it.title }
           col.title.contains(q, ignoreCase = true) ||
             col.description.contains(q, ignoreCase = true) ||
             albumTitles.contains(q, ignoreCase = true)
@@ -895,7 +907,16 @@ fun KenanganScreen(
         EvoriaPillSearchBar(
           query = searchQuery,
           onQueryChange = { searchQuery = it },
-          onSearch = {},
+          onSearch = {
+            keyboardController?.hide()
+            scope.launch {
+              when (activeSubPage) {
+                KenanganSubPage.KENANGAN -> kenanganListState.animateScrollToItem(0)
+                KenanganSubPage.ALBUM -> albumGridState.animateScrollToItem(0)
+                KenanganSubPage.GALERI -> galeriGridState.animateScrollToItem(0)
+              }
+            }
+          },
           placeholder =
             when (activeSubPage) {
               KenanganSubPage.KENANGAN -> "Cari kompilasi kenangan atau album..."
@@ -926,7 +947,7 @@ fun KenanganScreen(
                 Column(modifier = Modifier.weight(1f)) {
                   Text("Kompilasi Kenangan", style = MaterialTheme.typography.titleMedium, color = tokens.inkText)
                   Text(
-                    "Gabungkan beberapa album jadi satu kenangan utuh",
+                    "Gabungan minimal 2 album • foto Galeri tidak masuk otomatis",
                     style = MaterialTheme.typography.labelSmall,
                     color = tokens.mutedText,
                   )
@@ -978,10 +999,13 @@ fun KenanganScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                       text =
-                        if (albums.isEmpty()) {
-                          "Buat album di tab Album terlebih dahulu, lalu gabungkan beberapa album menjadi satu Kenangan spesial."
-                        } else {
-                          "Pilih dua atau lebih album yang sudah ada untuk digabungkan ke dalam satu halaman Kenangan."
+                        when {
+                          albums.isEmpty() ->
+                            "Foto di Galeri tidak otomatis masuk ke Kenangan. Buat minimal 2 album di tab Album terlebih dahulu, lalu gabungkan ke sini."
+                          albums.size == 1 ->
+                            "Foto di Galeri tetap terpisah. Kamu baru punya 1 album (\"${albums.first().title}\") — buat minimal 1 album lagi agar dapat digabung ke Kenangan."
+                          else ->
+                            "Foto di Galeri tidak otomatis masuk ke Kenangan. Pilih minimal 2 album untuk digabungkan menjadi satu halaman Kenangan."
                         },
                       style = MaterialTheme.typography.bodySmall,
                       color = tokens.mutedText,
@@ -989,7 +1013,7 @@ fun KenanganScreen(
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
                       onClick = {
-                        if (albums.isEmpty()) {
+                        if (albums.size < 2) {
                           activeSubPage = KenanganSubPage.ALBUM
                           showAlbumDialog = true
                         } else {
@@ -1000,12 +1024,19 @@ fun KenanganScreen(
                       colors = ButtonDefaults.buttonColors(containerColor = tokens.primaryTerracotta),
                       modifier = Modifier.fillMaxWidth().testTag("kenangan_empty_cta_button"),
                     ) {
-                      Text(if (albums.isEmpty()) "Buat Album Pertama" else "Gabungkan Album Sekarang")
+                      Text(
+                        when {
+                          albums.isEmpty() -> "Buat Album Pertama"
+                          albums.size == 1 -> "Buat Album Kedua"
+                          else -> "Gabungkan Album Sekarang"
+                        }
+                      )
                     }
                   }
                 }
               } else {
                 LazyColumn(
+                  state = kenanganListState,
                   modifier = Modifier.weight(1f).testTag("kenangan_list"),
                   contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 36.dp),
                   verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1015,9 +1046,9 @@ fun KenanganScreen(
                     key = { it.id },
                     contentType = { "kenangan_collection_card" },
                   ) { col ->
-                    val mergedIds = col.albumIdList()
-                    val mergedAlbums = mergedIds.mapNotNull { albumsById[it] }
-                    val mergedMemories = memories.filter { it.albumId in mergedIds }
+                    val mergedAlbums = col.albumIdList().mapNotNull { albumsById[it] }.distinctBy { it.id }
+                    val validMergedIds = mergedAlbums.map { it.id }.toSet()
+                    val mergedMemories = memories.filter { mem -> !mem.albumId.isNullOrBlank() && mem.albumId in validMergedIds }
                     val heroCover =
                       col.coverUri
                         ?: mergedAlbums.firstNotNullOfOrNull { it.coverUri }
@@ -1163,6 +1194,7 @@ fun KenanganScreen(
                 }
               } else {
                 LazyVerticalGrid(
+                  state = albumGridState,
                   columns = GridCells.Fixed(2),
                   modifier = Modifier.weight(1f).testTag("album_page_grid"),
                   contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 36.dp),
@@ -1303,7 +1335,6 @@ fun KenanganScreen(
               } else {
                 val groupedSections = remember(galleryMemories) { groupMemoriesByGalleryDay(galleryMemories) }
                 val flatGalleryIds = remember(groupedSections) { groupedSections.flatMap { sec -> sec.items.map { it.id } } }
-                val galeriGridState = rememberLazyGridState()
                 var dragAnchorId by remember { mutableStateOf<String?>(null) }
                 var dragBaseSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -1733,10 +1764,13 @@ fun KenanganDetailScreen(
   BackHandler(onBack = onBack)
   val tokens = LocalEvoriaTokens.current
   val includedIds = remember(collection.albumIdsCsv) { collection.albumIdList().toSet() }
-  val includedAlbums = remember(albums, includedIds) { albums.filter { it.id in includedIds } }
+  val includedAlbums = remember(albums, includedIds) { albums.filter { it.id in includedIds }.distinctBy { it.id } }
+  val validIncludedIds = remember(includedAlbums) { includedAlbums.map { it.id }.toSet() }
   val mergedMemories =
-    remember(memories, includedIds) {
-      memories.filter { it.albumId in includedIds }.sortedByDescending { it.memoryDateMillis }
+    remember(memories, validIncludedIds) {
+      memories
+        .filter { !it.albumId.isNullOrBlank() && it.albumId in validIncludedIds }
+        .sortedByDescending { it.memoryDateMillis }
     }
 
   EvoriaSanctuaryBackdrop {
@@ -2559,9 +2593,9 @@ fun AddOrEditMemoryScreen(
               )
             }
           }
-          if (!aiConsentGranted) {
+          if (aiDraftState is AiMemoryDraftUiState.Idle) {
             Text(
-              text = "Aktifkan izin Gemini AI di tab Jelajah bila ingin membuat judul & cerita otomatis dari foto.",
+              text = "Ketuk 'Rangkai AI' bila ingin membuat draf judul, caption & cerita kenangan secara otomatis.",
               style = MaterialTheme.typography.labelSmall,
               color = tokens.mutedText,
             )

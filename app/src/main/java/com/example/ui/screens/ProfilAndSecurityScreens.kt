@@ -53,6 +53,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
@@ -79,11 +80,13 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
@@ -166,6 +169,8 @@ import com.example.BuildConfig
 import com.example.R
 import com.example.data.local.AppUserPrefs
 import com.example.data.local.AutoLockTimeout
+import com.example.data.local.DEFAULT_DEV_DISPLAY_NAME
+import com.example.data.local.DEFAULT_DEV_ROLE_LABEL
 import com.example.data.local.DEVELOPER_ADMIN_EMAIL
 import com.example.data.local.EvoriaAccentPreset
 import com.example.data.local.LocalNotificationEntity
@@ -176,6 +181,7 @@ import com.example.data.local.PinVerifyResult
 import com.example.data.local.SecuritySettings
 import com.example.data.local.SyncCheckpointEntity
 import com.example.data.local.ThemeMode
+import com.example.data.local.canEditAboutPage
 import com.example.data.local.canEditDeveloperSocials
 import com.example.data.remote.CoupleConnectionDto
 import com.example.data.remote.GeneratedInvitation
@@ -242,8 +248,12 @@ fun ProfilScreen(
   val tokens = LocalEvoriaTokens.current
   val displayName = profile?.displayName?.ifBlank { fallbackName } ?: fallbackName
   val partnerName =
-    profile?.partnerDisplayName
-      ?: couple?.let { if (it.memberOneUid == currentUid) it.memberTwoName else it.memberOneName }
+    if (couple != null) {
+      profile?.partnerDisplayName?.takeIf { it.isNotBlank() }
+        ?: if (couple.memberOneUid == currentUid) couple.memberTwoName else couple.memberOneName
+    } else {
+      null
+    }
 
   val avatarPicker =
     rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -1344,15 +1354,44 @@ fun PartnerConnectionScreen(
             Text("Ruang Berdua Aktif", style = MaterialTheme.typography.headlineMedium, color = tokens.inkText)
             Spacer(modifier = Modifier.height(4.dp))
             Text("Terhubung dengan $partnerName", style = MaterialTheme.typography.titleMedium, color = tokens.primaryTerracotta)
-            Text(couple.anniversaryLabel ?: "Setiap kenangan bersama kini dapat dibagikan melalui EVORIA Share.", style = MaterialTheme.typography.bodySmall, color = tokens.mutedText)
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+              couple.anniversaryLabel ?: "Setiap kenangan bersama kini dapat dibagikan melalui EVORIA Share.",
+              style = MaterialTheme.typography.bodySmall,
+              color = tokens.mutedText,
+            )
+          }
+
+          EvoriaCard {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Icon(Icons.Filled.LinkOff, contentDescription = null, tint = tokens.roseError, modifier = Modifier.size(20.dp))
+              Text("Lepaskan Hubungan", style = MaterialTheme.typography.titleMedium, color = tokens.roseError)
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              "Melepaskan hubungan akan memutus tautan ruang berdua dengan $partnerName. Foto, album, dan catatan pribadimu di perangkat tetap aman, dan setelah dilepas kamu dapat menautkan akun baru.",
+              style = MaterialTheme.typography.bodySmall,
+              color = tokens.mutedText,
+            )
+            if (!inviteError.isNullOrBlank()) {
+              Spacer(modifier = Modifier.height(8.dp))
+              Text(inviteError, style = MaterialTheme.typography.bodySmall, color = tokens.roseError)
+            }
+            Spacer(modifier = Modifier.height(14.dp))
             OutlinedButton(
               onClick = { confirmDisconnect = true },
+              enabled = !inviteLoading,
               border = BorderStroke(1.dp, tokens.roseError),
               shape = RoundedCornerShape(50),
-              modifier = Modifier.fillMaxWidth(),
+              modifier = Modifier.fillMaxWidth().height(48.dp).testTag("disconnect_couple_button"),
             ) {
-              Text("Putuskan Koneksi Pasangan", color = tokens.roseError)
+              if (inviteLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = tokens.roseError, strokeWidth = 2.dp)
+              } else {
+                Icon(Icons.Filled.LinkOff, contentDescription = null, tint = tokens.roseError, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Lepaskan Hubungan", color = tokens.roseError, fontWeight = FontWeight.SemiBold)
+              }
             }
           }
         } else {
@@ -1588,10 +1627,15 @@ fun PartnerConnectionScreen(
   }
 
   if (confirmDisconnect) {
+    val partnerName = couple?.let {
+      if (it.memberOneUid == currentUid) it.memberTwoName else it.memberOneName
+    } ?: "pasangan"
     AlertDialog(
       onDismissRequest = { confirmDisconnect = false },
-      title = { Text("Putuskan Koneksi?") },
-      text = { Text("Koneksi ruang bersama akan diputuskan. Data lokal pribadimu tetap aman tersimpan di perangkat ini.") },
+      title = { Text("Lepaskan Hubungan?") },
+      text = {
+        Text("Hubungan dan tautan ruang bersama dengan $partnerName akan dilepaskan. Foto, album, dan data pribadimu di perangkat ini tetap aman tersimpan.")
+      },
       confirmButton = {
         Button(
           onClick = {
@@ -1599,7 +1643,8 @@ fun PartnerConnectionScreen(
             onDisconnectCouple()
           },
           colors = ButtonDefaults.buttonColors(containerColor = tokens.roseError),
-        ) { Text("Putuskan") }
+          modifier = Modifier.testTag("confirm_disconnect_couple_button"),
+        ) { Text("Lepaskan Hubungan") }
       },
       dismissButton = { TextButton(onClick = { confirmDisconnect = false }) { Text("Batal") } },
     )
@@ -3117,20 +3162,86 @@ fun AboutEvoriaScreen(
   userPrefs: AppUserPrefs,
   currentUserEmail: String? = null,
   onSaveDeveloperSocials: (instagram: String, tiktok: String, github: String, email: String, website: String) -> Unit = { _, _, _, _, _ -> },
+  onSaveDeveloperAboutInfo: (displayName: String, roleLabel: String, useBackgroundAsPageBackdrop: Boolean) -> Unit = { _, _, _ -> },
+  onPickDeveloperBackground: (Uri) -> Unit = {},
+  onResetDeveloperBackground: () -> Unit = {},
+  onPickDeveloperAvatar: (Uri) -> Unit = {},
+  onResetDeveloperAvatar: () -> Unit = {},
   onBack: () -> Unit,
 ) {
   BackHandler(onBack = onBack)
   val tokens = LocalEvoriaTokens.current
   val context = LocalContext.current
-  val isDeveloperAdmin = remember(currentUserEmail) { canEditDeveloperSocials(currentUserEmail) }
-  var showEditSocialsDialog by remember { mutableStateOf(false) }
+  val isDeveloperAdmin = remember(currentUserEmail) { canEditAboutPage(currentUserEmail) }
+  var showCustomizeDialog by remember { mutableStateOf(false) }
   var actionFeedback by remember { mutableStateOf<String?>(null) }
+
+  val backgroundPicker =
+    rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+      if (uri != null && isDeveloperAdmin) {
+        onPickDeveloperBackground(uri)
+      }
+    }
+
+  val avatarPicker =
+    rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+      if (uri != null && isDeveloperAdmin) {
+        onPickDeveloperAvatar(uri)
+      }
+    }
+
+  val defaultDevVideoUri =
+    remember(context.packageName) {
+      val rawId =
+        context.resources.getIdentifier(
+          "dev_card_purple_wolf",
+          "raw",
+          context.packageName,
+        )
+      if (rawId != 0) "android.resource://${context.packageName}/$rawId" else ""
+    }
+
+  val customBgUri = userPrefs.devBackgroundUri
+  val hasCustomBg = !customBgUri.isNullOrBlank()
+  val hasCustomPageBackdrop = hasCustomBg && userPrefs.devUseBackgroundAsPageBackdrop
+
+  val cardSurfaceColor =
+    when {
+      hasCustomPageBackdrop -> Color(0xCC16141C)
+      tokens.isDark -> tokens.cardSurface
+      else -> tokens.cardSurface
+    }
+  val primaryInk = if (hasCustomPageBackdrop) Color.White else tokens.inkText
+  val secondaryInk = if (hasCustomPageBackdrop) Color(0xFFB7B3C2) else tokens.mutedText
+  val borderInk =
+    if (hasCustomPageBackdrop) Color.White.copy(alpha = 0.14f) else tokens.outlineSoft.copy(alpha = 0.65f)
+  val accentColor = if (hasCustomPageBackdrop) Color(0xFFF6C6AD) else tokens.primaryTerracotta
+
+  fun launchBgPicker() {
+    if (!isDeveloperAdmin) {
+      actionFeedback = "Hanya akun $DEVELOPER_ADMIN_EMAIL yang dapat mengubah halaman Tentang."
+      return
+    }
+    backgroundPicker.launch(
+      PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+    )
+  }
+
+  fun launchAvatarPicker() {
+    if (!isDeveloperAdmin) {
+      actionFeedback = "Hanya akun $DEVELOPER_ADMIN_EMAIL yang dapat mengubah foto profil developer."
+      return
+    }
+    avatarPicker.launch(
+      PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+    )
+  }
 
   fun openExternalOrPrompt(platform: String, rawValue: String) {
     val targetUrl = normalizeSocialUrl(platform, rawValue)
     if (targetUrl.isEmpty()) {
       if (isDeveloperAdmin) {
-        showEditSocialsDialog = true
+        showCustomizeDialog = true
       } else {
         actionFeedback = "Hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengatur tautan ini."
       }
@@ -3153,58 +3264,131 @@ fun AboutEvoriaScreen(
     actionFeedback = "$label disalin ke papan klip."
   }
 
-  EvoriaSanctuaryBackdrop {
+  val screenContent: @Composable () -> Unit = {
     Column(
       modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      EvoriaTopBar(
-        title = "Tentang EVORIA",
-        subtitle = "Versi aplikasi, developer & sosial media",
-        onBack = onBack,
-      )
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        IconButton(
+          onClick = onBack,
+          modifier = Modifier.minimumInteractiveComponentSize().testTag("back_button"),
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "Kembali",
+            tint = primaryInk,
+          )
+        }
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+          text = "Tentang",
+          style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+          color = primaryInk,
+          modifier = Modifier.weight(1f),
+        )
+        if (isDeveloperAdmin) {
+          TextButton(
+            onClick = { showCustomizeDialog = true },
+            modifier = Modifier.minimumInteractiveComponentSize().testTag("about_top_customize_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Tune,
+              contentDescription = null,
+              tint = accentColor,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "Sesuaikan",
+              color = accentColor,
+              style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+            )
+          }
+        }
+      }
 
       LazyColumn(
         modifier = Modifier.fillMaxSize().widthIn(max = 600.dp).testTag("about_lazy_column"),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 36.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 36.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
       ) {
-        // App Identity & Version Card
+        // Item 0: App Identity Card (+ Developer Quick-Customize Banner when logged in as musyawalraffa@gmail.com)
         item {
-          EvoriaCard(elevated = true) {
-            Row(
+          Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+              shape = RoundedCornerShape(22.dp),
+              color = cardSurfaceColor,
+              border = BorderStroke(1.dp, borderInk),
+              tonalElevation = if (hasCustomPageBackdrop) 0.dp else 2.dp,
               modifier = Modifier.fillMaxWidth(),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-              val aboutLogoReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_uploaded, sizePx = 192)
-              AsyncImage(
-                model = aboutLogoReq,
-                contentDescription = "Logo EVORIA",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.size(62.dp).clip(RoundedCornerShape(18.dp)),
-              )
-              Column(modifier = Modifier.weight(1f)) {
-                Text(
-                  text = "EVORIA",
-                  style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                  color = tokens.inkText,
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+              ) {
+                val aboutLogoReq = rememberThumbnailRequest(R.drawable.evoria_app_icon_uploaded, sizePx = 192)
+                AsyncImage(
+                  model = aboutLogoReq,
+                  contentDescription = "Logo EVORIA",
+                  contentScale = ContentScale.Crop,
+                  modifier = Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)),
                 )
-                Text(
-                  text = "Ruang kenangan berdua yang hangat & privat",
-                  style = MaterialTheme.typography.bodySmall,
-                  color = tokens.mutedText,
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Surface(
-                  shape = RoundedCornerShape(50),
-                  color = tokens.accentPeach.copy(alpha = 0.28f),
-                ) {
+                Column(modifier = Modifier.weight(1f)) {
                   Text(
-                    text = "Versi ${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = tokens.primaryTerracotta,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp).testTag("about_version_text"),
+                    text = "EVORIA",
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                    color = primaryInk,
+                  )
+                  Spacer(modifier = Modifier.height(2.dp))
+                  Text(
+                    text = "Versi ${BuildConfig.VERSION_NAME} • Build ${BuildConfig.VERSION_CODE}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = secondaryInk,
+                    modifier = Modifier.testTag("about_version_text"),
+                  )
+                }
+              }
+            }
+
+            if (isDeveloperAdmin) {
+              Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = cardSurfaceColor,
+                border = BorderStroke(1.dp, borderInk),
+                modifier =
+                  Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .minimumInteractiveComponentSize()
+                    .clickable { showCustomizeDialog = true }
+                    .testTag("about_customize_banner_row"),
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Tune,
+                    contentDescription = null,
+                    tint = primaryInk,
+                    modifier = Modifier.size(20.dp),
+                  )
+                  Spacer(modifier = Modifier.width(14.dp))
+                  Text(
+                    text = "Sesuaikan halaman tentang",
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                    color = primaryInk,
+                    modifier = Modifier.weight(1f),
+                  )
+                  Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = secondaryInk,
                   )
                 }
               }
@@ -3212,102 +3396,228 @@ fun AboutEvoriaScreen(
           }
         }
 
-        // Developer Card with looping uploaded video background + gradient readability scrim
+        // Item 1: Developer Hero Card matching reference layout (customizable background + bottom-left name/role + bottom-right circular profile photo)
         item {
-          val devVideoUri =
-            remember(context.packageName) {
-              "android.resource://${context.packageName}/${R.raw.dev_card_purple_wolf}"
-            }
           Surface(
             shape = RoundedCornerShape(24.dp),
-            color = Color(0xFF1A1224),
-            tonalElevation = 3.dp,
+            color = Color(0xFF121016),
+            tonalElevation = 4.dp,
             shadowElevation = 6.dp,
-            border = BorderStroke(1.dp, tokens.accentPeach.copy(alpha = 0.45f)),
-            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)),
+            border = BorderStroke(1.dp, borderInk),
+            modifier = Modifier.fillMaxWidth().height(330.dp).clip(RoundedCornerShape(24.dp)),
           ) {
-            Box(modifier = Modifier.fillMaxWidth()) {
-              EvoriaLoopingVideoSurface(
-                videoUri = devVideoUri,
-                modifier = Modifier.matchParentSize(),
-              )
+            Box(modifier = Modifier.fillMaxSize()) {
+              // Background layer: developer custom photo/video or default video/gradient
+              if (hasCustomBg) {
+                if (userPrefs.devBackgroundType == "video") {
+                  EvoriaLoopingVideoSurface(
+                    videoUri = customBgUri!!,
+                    modifier = Modifier.matchParentSize(),
+                  )
+                } else {
+                  val bgReq = rememberThumbnailRequest(customBgUri, sizePx = 1080)
+                  AsyncImage(
+                    model = bgReq,
+                    contentDescription = "Background developer EVORIA",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize(),
+                  )
+                }
+              } else if (defaultDevVideoUri.isNotBlank()) {
+                EvoriaLoopingVideoSurface(
+                  videoUri = defaultDevVideoUri,
+                  modifier = Modifier.matchParentSize(),
+                )
+              } else {
+                Box(
+                  modifier =
+                    Modifier
+                      .matchParentSize()
+                      .background(
+                        Brush.verticalGradient(
+                          listOf(Color(0xFF231B2E), Color(0xFF17131E), Color(0xFF0D0B10))
+                        )
+                      )
+                )
+              }
+
+              // Dramatic bottom-up gradient scrim for sharp white typography over any photo/video
               Box(
                 modifier =
                   Modifier
                     .matchParentSize()
                     .background(
                       Brush.verticalGradient(
-                        0.0f to Color(0xD6120D1A),
-                        0.48f to Color(0xAA191124),
-                        1.0f to Color(0xE0110B18),
+                        0.0f to Color(0x22000000),
+                        0.45f to Color(0x2E000000),
+                        0.76f to Color(0xBD09080C),
+                        1.0f to Color(0xEC070609),
                       )
                     )
               )
-              Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
-                Text(
-                  text = "DEVELOPER",
-                  style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                  color = Color(0xFFF6C6AD),
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                  text = "RAFFA AULIA MUSYAWAL",
-                  style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                  color = Color.White,
-                  modifier = Modifier.testTag("about_developer_name"),
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                  text = "Kreator & Pengembang Aplikasi EVORIA",
-                  style = MaterialTheme.typography.titleSmall,
-                  color = Color.White.copy(alpha = 0.9f),
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                  text = "Dibangun dengan Jetpack Compose & Material Design 3 untuk menyimpan foto, album, jurnal refleksi, kapsul waktu, dan soundtrack penuh bermakna.",
-                  style = MaterialTheme.typography.bodySmall,
-                  color = Color.White.copy(alpha = 0.82f),
-                )
+
+              // Developer-only quick action chip at top-right to pick custom background media
+              if (isDeveloperAdmin) {
+                Surface(
+                  shape = RoundedCornerShape(50),
+                  color = Color.Black.copy(alpha = 0.56f),
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                  modifier =
+                    Modifier
+                      .align(Alignment.TopEnd)
+                      .padding(14.dp)
+                      .clip(RoundedCornerShape(50))
+                      .minimumInteractiveComponentSize()
+                      .clickable { launchBgPicker() }
+                      .testTag("about_edit_background_button"),
+                ) {
+                  Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.PhotoLibrary,
+                      contentDescription = "Ubah background halaman tentang",
+                      tint = Color.White,
+                      modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                      text = "Ubah latar",
+                      style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                      color = Color.White,
+                    )
+                  }
+                }
+              }
+
+              // Bottom Hero Row: Left Name & Role + Right Circular Developer Profile Photo
+              Row(
+                modifier =
+                  Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom,
+              ) {
+                Column(
+                  modifier = Modifier.weight(1f).padding(end = 14.dp),
+                ) {
+                  Text(
+                    text = userPrefs.devDisplayName.ifBlank { DEFAULT_DEV_DISPLAY_NAME },
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.ExtraBold),
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("about_developer_name"),
+                  )
+                  Spacer(modifier = Modifier.height(2.dp))
+                  Text(
+                    text = userPrefs.devRoleLabel.ifBlank { DEFAULT_DEV_ROLE_LABEL },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("about_developer_role"),
+                  )
+                }
+
+                // Circular developer profile photo
+                Box(
+                  modifier =
+                    Modifier
+                      .size(90.dp)
+                      .then(
+                        if (isDeveloperAdmin) {
+                          Modifier.clickable { launchAvatarPicker() }
+                        } else {
+                          Modifier
+                        }
+                      )
+                      .testTag("about_developer_avatar"),
+                ) {
+                  Surface(
+                    shape = CircleShape,
+                    color = Color(0xFF221D2A),
+                    border = BorderStroke(2.dp, Color.White.copy(alpha = 0.85f)),
+                    shadowElevation = 6.dp,
+                    modifier = Modifier.fillMaxSize(),
+                  ) {
+                    if (!userPrefs.devAvatarUri.isNullOrBlank()) {
+                      val avatarReq = rememberThumbnailRequest(userPrefs.devAvatarUri, sizePx = 320)
+                      AsyncImage(
+                        model = avatarReq,
+                        contentDescription = "Foto profil developer",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().clip(CircleShape),
+                      )
+                    } else {
+                      Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                          imageVector = Icons.Filled.Person,
+                          contentDescription = "Foto profil developer",
+                          tint = Color.White.copy(alpha = 0.85f),
+                          modifier = Modifier.size(42.dp),
+                        )
+                      }
+                    }
+                  }
+
+                  if (isDeveloperAdmin) {
+                    Surface(
+                      shape = CircleShape,
+                      color = Color(0xFFF6C6AD),
+                      border = BorderStroke(1.5.dp, Color(0xFF141118)),
+                      modifier = Modifier.align(Alignment.BottomEnd).size(26.dp),
+                    ) {
+                      Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                          imageVector = Icons.Filled.CameraAlt,
+                          contentDescription = "Ubah foto profil developer",
+                          tint = Color(0xFF1B1512),
+                          modifier = Modifier.size(14.dp),
+                        )
+                      }
+                    }
+                  }
+                }
               }
             }
           }
         }
 
-        // Developer Social Media Accounts (Editable ONLY by musyawalraffa@gmail.com)
+        // Item 2: Media Sosial Section (matches bottom card layout in reference screenshot)
         item {
-          EvoriaCard {
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
-              modifier = Modifier.fillMaxWidth(),
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically,
             ) {
-              Column(modifier = Modifier.weight(1f)) {
-                Text(
-                  text = "Akun Sosial Media",
-                  style = MaterialTheme.typography.titleMedium,
-                  color = tokens.inkText,
-                )
-                Text(
-                  text =
-                    if (isDeveloperAdmin) "Terverifikasi sebagai developer ($DEVELOPER_ADMIN_EMAIL)"
-                    else "Terhubung langsung ke profil developer",
-                  style = MaterialTheme.typography.bodySmall,
-                  color = tokens.mutedText,
-                )
-              }
+              Text(
+                text = "Media sosial",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+                color = secondaryInk,
+              )
               if (isDeveloperAdmin) {
                 TextButton(
-                  onClick = { showEditSocialsDialog = true },
+                  onClick = { showCustomizeDialog = true },
                   modifier = Modifier.minimumInteractiveComponentSize().testTag("about_edit_socials_button"),
                 ) {
-                  Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp), tint = tokens.primaryTerracotta)
+                  Icon(
+                    imageVector = Icons.Filled.Edit,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = accentColor,
+                  )
                   Spacer(modifier = Modifier.width(4.dp))
-                  Text("Atur", color = tokens.primaryTerracotta)
+                  Text("Atur", color = accentColor)
                 }
               } else {
                 Surface(
                   shape = RoundedCornerShape(50),
-                  color = tokens.secondarySurface,
+                  color = if (hasCustomPageBackdrop) Color.White.copy(alpha = 0.12f) else tokens.secondarySurface,
                   modifier = Modifier.testTag("about_socials_locked_badge"),
                 ) {
                   Row(
@@ -3315,11 +3625,16 @@ fun AboutEvoriaScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                   ) {
-                    Icon(Icons.Filled.Lock, contentDescription = null, tint = tokens.mutedText, modifier = Modifier.size(13.dp))
+                    Icon(
+                      imageVector = Icons.Filled.Lock,
+                      contentDescription = null,
+                      tint = secondaryInk,
+                      modifier = Modifier.size(13.dp),
+                    )
                     Text(
                       text = "Hanya Developer",
                       style = MaterialTheme.typography.labelSmall,
-                      color = tokens.mutedText,
+                      color = secondaryInk,
                     )
                   }
                 }
@@ -3327,82 +3642,137 @@ fun AboutEvoriaScreen(
             }
 
             if (!actionFeedback.isNullOrBlank()) {
-              Spacer(modifier = Modifier.height(6.dp))
               Text(
                 text = actionFeedback.orEmpty(),
                 style = MaterialTheme.typography.labelSmall,
-                color = tokens.primaryTerracotta,
+                color = accentColor,
+                modifier = Modifier.padding(horizontal = 4.dp),
               )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            AboutSocialMediaRow(
-              icon = Icons.Filled.CameraAlt,
-              platformLabel = "Instagram",
-              value = userPrefs.devInstagram,
-              isEditable = isDeveloperAdmin,
-              testTag = "about_social_instagram",
-              onOpen = { openExternalOrPrompt("instagram", userPrefs.devInstagram) },
-              onCopy = { copyToClipboard("Instagram", userPrefs.devInstagram) },
-            )
-            HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.5f))
-            AboutSocialMediaRow(
-              icon = Icons.Filled.MusicNote,
-              platformLabel = "TikTok",
-              value = userPrefs.devTiktok,
-              isEditable = isDeveloperAdmin,
-              testTag = "about_social_tiktok",
-              onOpen = { openExternalOrPrompt("tiktok", userPrefs.devTiktok) },
-              onCopy = { copyToClipboard("TikTok", userPrefs.devTiktok) },
-            )
-            HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.5f))
-            AboutSocialMediaRow(
-              icon = Icons.Filled.Code,
-              platformLabel = "GitHub",
-              value = userPrefs.devGithub,
-              isEditable = isDeveloperAdmin,
-              testTag = "about_social_github",
-              onOpen = { openExternalOrPrompt("github", userPrefs.devGithub) },
-              onCopy = { copyToClipboard("GitHub", userPrefs.devGithub) },
-            )
-            HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.5f))
-            AboutSocialMediaRow(
-              icon = Icons.Filled.Email,
-              platformLabel = "Email",
-              value = userPrefs.devEmail,
-              isEditable = isDeveloperAdmin,
-              testTag = "about_social_email",
-              onOpen = { openExternalOrPrompt("email", userPrefs.devEmail) },
-              onCopy = { copyToClipboard("Email", userPrefs.devEmail) },
-            )
-            HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.5f))
-            AboutSocialMediaRow(
-              icon = Icons.Filled.Language,
-              platformLabel = "Website / Portofolio",
-              value = userPrefs.devWebsite,
-              isEditable = isDeveloperAdmin,
-              testTag = "about_social_website",
-              onOpen = { openExternalOrPrompt("website", userPrefs.devWebsite) },
-              onCopy = { copyToClipboard("Website", userPrefs.devWebsite) },
-            )
+            Surface(
+              shape = RoundedCornerShape(22.dp),
+              color = cardSurfaceColor,
+              border = BorderStroke(1.dp, borderInk),
+              tonalElevation = if (hasCustomPageBackdrop) 0.dp else 2.dp,
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp)) {
+                AboutSocialMediaRow(
+                  icon = Icons.Filled.CameraAlt,
+                  platformLabel = "Instagram",
+                  value = userPrefs.devInstagram,
+                  isEditable = isDeveloperAdmin,
+                  primaryInk = primaryInk,
+                  secondaryInk = secondaryInk,
+                  testTag = "about_social_instagram",
+                  onOpen = { openExternalOrPrompt("instagram", userPrefs.devInstagram) },
+                  onCopy = { copyToClipboard("Instagram", userPrefs.devInstagram) },
+                )
+                HorizontalDivider(color = borderInk.copy(alpha = 0.55f))
+                AboutSocialMediaRow(
+                  icon = Icons.Filled.MusicNote,
+                  platformLabel = "TikTok",
+                  value = userPrefs.devTiktok,
+                  isEditable = isDeveloperAdmin,
+                  primaryInk = primaryInk,
+                  secondaryInk = secondaryInk,
+                  testTag = "about_social_tiktok",
+                  onOpen = { openExternalOrPrompt("tiktok", userPrefs.devTiktok) },
+                  onCopy = { copyToClipboard("TikTok", userPrefs.devTiktok) },
+                )
+                HorizontalDivider(color = borderInk.copy(alpha = 0.55f))
+                AboutSocialMediaRow(
+                  icon = Icons.Filled.Code,
+                  platformLabel = "GitHub",
+                  value = userPrefs.devGithub,
+                  isEditable = isDeveloperAdmin,
+                  primaryInk = primaryInk,
+                  secondaryInk = secondaryInk,
+                  testTag = "about_social_github",
+                  onOpen = { openExternalOrPrompt("github", userPrefs.devGithub) },
+                  onCopy = { copyToClipboard("GitHub", userPrefs.devGithub) },
+                )
+                HorizontalDivider(color = borderInk.copy(alpha = 0.55f))
+                AboutSocialMediaRow(
+                  icon = Icons.Filled.Email,
+                  platformLabel = "Email",
+                  value = userPrefs.devEmail,
+                  isEditable = isDeveloperAdmin,
+                  primaryInk = primaryInk,
+                  secondaryInk = secondaryInk,
+                  testTag = "about_social_email",
+                  onOpen = { openExternalOrPrompt("email", userPrefs.devEmail) },
+                  onCopy = { copyToClipboard("Email", userPrefs.devEmail) },
+                )
+                HorizontalDivider(color = borderInk.copy(alpha = 0.55f))
+                AboutSocialMediaRow(
+                  icon = Icons.Filled.Language,
+                  platformLabel = "Website",
+                  value = userPrefs.devWebsite,
+                  isEditable = isDeveloperAdmin,
+                  primaryInk = primaryInk,
+                  secondaryInk = secondaryInk,
+                  testTag = "about_social_website",
+                  onOpen = { openExternalOrPrompt("website", userPrefs.devWebsite) },
+                  onCopy = { copyToClipboard("Website", userPrefs.devWebsite) },
+                )
+              }
+            }
           }
         }
       }
     }
   }
 
-  if (isDeveloperAdmin && showEditSocialsDialog) {
-    AboutEditSocialsDialog(
-      initialInstagram = userPrefs.devInstagram,
-      initialTiktok = userPrefs.devTiktok,
-      initialGithub = userPrefs.devGithub,
-      initialEmail = userPrefs.devEmail,
-      initialWebsite = userPrefs.devWebsite,
-      onDismiss = { showEditSocialsDialog = false },
-      onSave = { ig, tt, gh, mail, web ->
+  if (hasCustomPageBackdrop) {
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A090D))) {
+      if (userPrefs.devBackgroundType == "video") {
+        EvoriaLoopingVideoSurface(
+          videoUri = customBgUri!!,
+          modifier = Modifier.fillMaxSize(),
+        )
+      } else {
+        val pageBgReq = rememberThumbnailRequest(customBgUri, sizePx = 1080)
+        AsyncImage(
+          model = pageBgReq,
+          contentDescription = null,
+          contentScale = ContentScale.Crop,
+          modifier = Modifier.fillMaxSize(),
+        )
+      }
+      Box(
+        modifier =
+          Modifier
+            .fillMaxSize()
+            .background(
+              Brush.verticalGradient(
+                0.0f to Color(0xC409080C),
+                0.5f to Color(0xD409080C),
+                1.0f to Color(0xEE070609),
+              )
+            )
+      )
+      screenContent()
+    }
+  } else {
+    EvoriaSanctuaryBackdrop(showBottomHills = false) {
+      screenContent()
+    }
+  }
+
+  if (isDeveloperAdmin && showCustomizeDialog) {
+    AboutCustomizeDialog(
+      userPrefs = userPrefs,
+      onDismiss = { showCustomizeDialog = false },
+      onPickBackground = { launchBgPicker() },
+      onResetBackground = onResetDeveloperBackground,
+      onPickAvatar = { launchAvatarPicker() },
+      onResetAvatar = onResetDeveloperAvatar,
+      onSaveAll = { devName, devRole, usePageBackdrop, ig, tt, gh, mail, web ->
+        onSaveDeveloperAboutInfo(devName, devRole, usePageBackdrop)
         onSaveDeveloperSocials(ig, tt, gh, mail, web)
-        showEditSocialsDialog = false
+        showCustomizeDialog = false
       },
     )
   }
@@ -3414,11 +3784,12 @@ private fun AboutSocialMediaRow(
   platformLabel: String,
   value: String,
   isEditable: Boolean,
+  primaryInk: Color,
+  secondaryInk: Color,
   testTag: String,
   onOpen: () -> Unit,
   onCopy: () -> Unit,
 ) {
-  val tokens = LocalEvoriaTokens.current
   val hasValue = value.isNotBlank()
   Row(
     modifier =
@@ -3426,40 +3797,37 @@ private fun AboutSocialMediaRow(
         .fillMaxWidth()
         .minimumInteractiveComponentSize()
         .clickable(onClick = onOpen)
-        .padding(vertical = 10.dp)
+        .padding(vertical = 12.dp)
         .testTag(testTag),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Surface(
-      shape = CircleShape,
-      color = if (hasValue) tokens.accentPeach.copy(alpha = 0.28f) else tokens.secondarySurface,
-      modifier = Modifier.size(38.dp),
-    ) {
-      Box(contentAlignment = Alignment.Center) {
-        Icon(
-          imageVector = icon,
-          contentDescription = null,
-          tint = if (hasValue) tokens.primaryTerracotta else tokens.mutedText,
-          modifier = Modifier.size(18.dp),
-        )
-      }
-    }
+    Icon(
+      imageVector = icon,
+      contentDescription = null,
+      tint = if (hasValue) primaryInk else secondaryInk,
+      modifier = Modifier.size(20.dp),
+    )
+    Spacer(modifier = Modifier.width(14.dp))
+    Text(
+      text = platformLabel,
+      style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+      color = primaryInk,
+    )
     Spacer(modifier = Modifier.width(12.dp))
-    Column(modifier = Modifier.weight(1f)) {
-      Text(platformLabel, style = MaterialTheme.typography.titleSmall, color = tokens.inkText)
-      Text(
-        text =
-          when {
-            hasValue -> value
-            isEditable -> "Ketuk untuk tambahkan akun $platformLabel"
-            else -> "Belum ditambahkan oleh developer"
-          },
-        style = MaterialTheme.typography.bodySmall,
-        color = if (hasValue) tokens.primaryTerracotta else tokens.mutedText,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
-    }
+    Text(
+      text =
+        when {
+          hasValue -> value
+          isEditable -> "Ketuk untuk atur"
+          else -> "Belum diatur"
+        },
+      style = MaterialTheme.typography.bodyMedium,
+      color = secondaryInk,
+      textAlign = TextAlign.End,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.weight(1f),
+    )
     if (hasValue) {
       IconButton(
         onClick = onCopy,
@@ -3468,55 +3836,155 @@ private fun AboutSocialMediaRow(
         Icon(
           imageVector = Icons.Filled.ContentCopy,
           contentDescription = "Salin $platformLabel",
-          tint = tokens.mutedText,
-          modifier = Modifier.size(18.dp),
+          tint = secondaryInk,
+          modifier = Modifier.size(16.dp),
         )
       }
+    } else if (!isEditable) {
+      Spacer(modifier = Modifier.width(8.dp))
+      Icon(
+        imageVector = Icons.Filled.Lock,
+        contentDescription = "Terkunci",
+        tint = secondaryInk.copy(alpha = 0.7f),
+        modifier = Modifier.size(15.dp),
+      )
     }
-    Icon(
-      imageVector =
-        when {
-          hasValue -> Icons.AutoMirrored.Filled.OpenInNew
-          isEditable -> Icons.Filled.Edit
-          else -> Icons.Filled.Lock
-        },
-      contentDescription =
-        when {
-          hasValue -> "Buka $platformLabel"
-          isEditable -> "Atur $platformLabel"
-          else -> "Terkunci"
-        },
-      tint = tokens.mutedText,
-      modifier = Modifier.size(18.dp),
-    )
   }
 }
 
 @Composable
-private fun AboutEditSocialsDialog(
-  initialInstagram: String,
-  initialTiktok: String,
-  initialGithub: String,
-  initialEmail: String,
-  initialWebsite: String,
+private fun AboutCustomizeDialog(
+  userPrefs: AppUserPrefs,
   onDismiss: () -> Unit,
-  onSave: (instagram: String, tiktok: String, github: String, email: String, website: String) -> Unit,
+  onPickBackground: () -> Unit,
+  onResetBackground: () -> Unit,
+  onPickAvatar: () -> Unit,
+  onResetAvatar: () -> Unit,
+  onSaveAll: (
+    displayName: String,
+    roleLabel: String,
+    useBackgroundAsPageBackdrop: Boolean,
+    instagram: String,
+    tiktok: String,
+    github: String,
+    email: String,
+    website: String,
+  ) -> Unit,
 ) {
-  var ig by remember(initialInstagram) { mutableStateOf(initialInstagram) }
-  var tt by remember(initialTiktok) { mutableStateOf(initialTiktok) }
-  var gh by remember(initialGithub) { mutableStateOf(initialGithub) }
-  var mail by remember(initialEmail) { mutableStateOf(initialEmail) }
-  var web by remember(initialWebsite) { mutableStateOf(initialWebsite) }
+  val tokens = LocalEvoriaTokens.current
+  var devName by remember(userPrefs.devDisplayName) { mutableStateOf(userPrefs.devDisplayName) }
+  var devRole by remember(userPrefs.devRoleLabel) { mutableStateOf(userPrefs.devRoleLabel) }
+  var usePageBg by remember(userPrefs.devUseBackgroundAsPageBackdrop) {
+    mutableStateOf(userPrefs.devUseBackgroundAsPageBackdrop)
+  }
+  var ig by remember(userPrefs.devInstagram) { mutableStateOf(userPrefs.devInstagram) }
+  var tt by remember(userPrefs.devTiktok) { mutableStateOf(userPrefs.devTiktok) }
+  var gh by remember(userPrefs.devGithub) { mutableStateOf(userPrefs.devGithub) }
+  var mail by remember(userPrefs.devEmail) { mutableStateOf(userPrefs.devEmail) }
+  var web by remember(userPrefs.devWebsite) { mutableStateOf(userPrefs.devWebsite) }
 
   EvoriaSymmetricDialogShell(
-    title = "Atur Sosial Media Developer",
-    subtitle = "Khusus akun $DEVELOPER_ADMIN_EMAIL • RAFFA AULIA MUSYAWAL",
-    icon = Icons.Filled.Share,
+    title = "Sesuaikan Halaman Tentang",
+    subtitle = "Akses eksklusif developer ($DEVELOPER_ADMIN_EMAIL)",
+    icon = Icons.Filled.Tune,
     onDismiss = onDismiss,
     confirmLabel = "Simpan",
     confirmTestTag = "about_social_save_button",
-    onConfirm = { onSave(ig, tt, gh, mail, web) },
+    onConfirm = { onSaveAll(devName, devRole, usePageBg, ig, tt, gh, mail, web) },
   ) {
+    Text(
+      text = "Background & Foto Profil Developer",
+      style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+      color = tokens.primaryTerracotta,
+    )
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      OutlinedButton(
+        onClick = onPickBackground,
+        modifier = Modifier.weight(1f).minimumInteractiveComponentSize().testTag("about_dialog_pick_bg"),
+      ) {
+        Icon(Icons.Filled.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(6.dp))
+        Text("Pilih Latar", maxLines = 1, overflow = TextOverflow.Ellipsis)
+      }
+      if (!userPrefs.devBackgroundUri.isNullOrBlank()) {
+        TextButton(
+          onClick = onResetBackground,
+          modifier = Modifier.minimumInteractiveComponentSize().testTag("about_dialog_reset_bg"),
+        ) {
+          Text("Reset")
+        }
+      }
+    }
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      OutlinedButton(
+        onClick = onPickAvatar,
+        modifier = Modifier.weight(1f).minimumInteractiveComponentSize().testTag("about_dialog_pick_avatar"),
+      ) {
+        Icon(Icons.Filled.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(6.dp))
+        Text("Foto Profil Dev", maxLines = 1, overflow = TextOverflow.Ellipsis)
+      }
+      if (!userPrefs.devAvatarUri.isNullOrBlank()) {
+        TextButton(
+          onClick = onResetAvatar,
+          modifier = Modifier.minimumInteractiveComponentSize().testTag("about_dialog_reset_avatar"),
+        ) {
+          Text("Reset")
+        }
+      }
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+        Text(
+          text = "Jadikan latar seluruh halaman",
+          style = MaterialTheme.typography.bodyMedium,
+          color = tokens.inkText,
+        )
+        Text(
+          text = "Tampilkan background pilihan sebagai atmosfer halaman Tentang",
+          style = MaterialTheme.typography.labelSmall,
+          color = tokens.mutedText,
+        )
+      }
+      Switch(
+        checked = usePageBg,
+        onCheckedChange = { usePageBg = it },
+        modifier = Modifier.testTag("about_use_page_bg_switch"),
+      )
+    }
+
+    HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.5f))
+
+    EvoriaFormTextField(
+      value = devName,
+      onValueChange = { devName = it },
+      label = "Nama Developer",
+      leadingIcon = Icons.Filled.Person,
+      singleLine = true,
+      modifier = Modifier.testTag("about_input_dev_name"),
+    )
+    EvoriaFormTextField(
+      value = devRole,
+      onValueChange = { devRole = it },
+      label = "Peran / Label (mis. Pengembang)",
+      leadingIcon = Icons.Filled.Edit,
+      singleLine = true,
+      modifier = Modifier.testTag("about_input_dev_role"),
+    )
+
+    HorizontalDivider(color = tokens.outlineSoft.copy(alpha = 0.5f))
+
     EvoriaFormTextField(
       value = ig,
       onValueChange = { ig = it },
@@ -3559,5 +4027,6 @@ private fun AboutEditSocialsDialog(
     )
   }
 }
+
 
 

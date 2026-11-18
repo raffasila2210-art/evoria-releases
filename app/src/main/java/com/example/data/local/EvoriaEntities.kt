@@ -207,3 +207,60 @@ data class SyncCheckpointEntity(
   val lastBackupMillis: Long = 0L,
   val statusMessage: String = "Siap disinkronkan secara lokal",
 )
+
+object PhotoIndexStatus {
+  const val PENDING = "PENDING"
+  const val INDEXED = "INDEXED"
+  const val FAILED = "FAILED"
+}
+
+@Entity(
+  tableName = "photo_embeddings",
+  indices = [
+    Index(value = ["ownerUid"]),
+    Index(value = ["indexStatus"]),
+    Index(value = ["modelVersion"]),
+  ],
+)
+data class PhotoEmbeddingEntity(
+  @PrimaryKey val memoryId: String,
+  val ownerUid: String,
+  val fileUri: String,
+  val embeddingBlob: ByteArray,
+  val embeddingDim: Int,
+  val modelVersion: String,
+  val indexStatus: String = PhotoIndexStatus.PENDING,
+  val contentSignature: String = "",
+  val indexedAtMillis: Long = 0L,
+  val lastError: String? = null,
+) {
+  override fun equals(other: Any?): Boolean {
+    if (this === other) return true
+    if (other !is PhotoEmbeddingEntity) return false
+    return memoryId == other.memoryId &&
+      ownerUid == other.ownerUid &&
+      fileUri == other.fileUri &&
+      embeddingBlob.contentEquals(other.embeddingBlob) &&
+      embeddingDim == other.embeddingDim &&
+      modelVersion == other.modelVersion &&
+      indexStatus == other.indexStatus &&
+      contentSignature == other.contentSignature &&
+      indexedAtMillis == other.indexedAtMillis &&
+      lastError == other.lastError
+  }
+
+  override fun hashCode(): Int {
+    var result = memoryId.hashCode()
+    result = 31 * result + ownerUid.hashCode()
+    result = 31 * result + fileUri.hashCode()
+    result = 31 * result + embeddingBlob.contentHashCode()
+    result = 31 * result + embeddingDim
+    result = 31 * result + modelVersion.hashCode()
+    result = 31 * result + indexStatus.hashCode()
+    result = 31 * result + contentSignature.hashCode()
+    result = 31 * result + indexedAtMillis.hashCode()
+    result = 31 * result + (lastError?.hashCode() ?: 0)
+    return result
+  }
+}
+

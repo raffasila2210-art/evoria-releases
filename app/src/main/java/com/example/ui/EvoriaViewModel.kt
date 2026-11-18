@@ -34,6 +34,7 @@ import com.example.data.local.ThemeMode
 import com.example.data.local.TimeCapsuleEntity
 import com.example.data.local.TrackEntity
 import com.example.data.local.UploadJobEntity
+import com.example.data.local.canEditAboutPage
 import com.example.data.local.canEditDeveloperSocials
 import com.example.data.remote.CoupleConnectionDto
 import com.example.data.remote.EvoriaCloudRepository
@@ -52,10 +53,18 @@ import com.example.data.remote.YouTubeDataApiClient
 import com.example.data.remote.YouTubeSearchResult
 import com.example.data.remote.YouTubeTrackMatch
 import com.example.data.remote.unwrapFirestoreException
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.example.media.EvoriaPlayerManager
 import com.example.media.MusicPlayerState
+import com.example.ml.EvoriaVisionRuntime
+import com.example.ml.IndexingStats
+import com.example.ml.ModelManager
+import com.example.ml.ModelState
+import com.example.ml.VisionEmbeddingEngine
 import com.example.notifications.EvoriaNotificationHelper
 import com.example.util.MediaStorageHelper
+import com.example.worker.VisionIndexWorker
 import java.util.UUID
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -63,6 +72,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -76,6 +86,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -126,6 +137,8 @@ class EvoriaViewModel(
   val playerManager: EvoriaPlayerManager,
   private val currentUserEmail: String? = null,
   private val appContext: Context? = null,
+  private val modelManager: ModelManager? = appContext?.let { EvoriaVisionRuntime.modelManager(it) },
+  private val embeddingEngine: VisionEmbeddingEngine? = appContext?.let { EvoriaVisionRuntime.embeddingEngine(it) },
 ) : ViewModel() {
 
   private val _isSecurityResolved = MutableStateFlow(false)
@@ -316,8 +329,47 @@ class EvoriaViewModel(
   private val _localStorageLabel = MutableStateFlow("Menghitung...")
   val localStorageLabel: StateFlow<String> = _localStorageLabel.asStateFlow()
 
+  val modelState: StateFlow<ModelState> =
+    modelManager?.state ?: MutableStateFlow<ModelState>(ModelState.NotDownloaded).asStateFlow()
+
+  val indexingStats: StateFlow<IndexingStats> =
+    combine(localMemories, localRepo.observePhotoEmbeddings(currentUserId)) { memories, embeddings ->
+      EvoriaVisionRuntime.computeIndexingStats(
+        memories = memories,
+        embeddings = embeddings,
+        modelVersion = modelManager?.modelVersion() ?: ModelManager.MODEL_VERSION,
+      )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), IndexingStats())
+
+  val isIndexingPhotos: StateFlow<Boolean> =
+    if (appContext != null) {
+      WorkManager.getInstance(appContext.applicationContext)
+        .getWorkInfosForUniqueWorkFlow(VisionIndexWorker.uniqueWorkName(currentUserId))
+        .map { infos -> infos.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED } }
+        .catch { emit(false) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), false)
+    } else {
+      MutableStateFlow(false).asStateFlow()
+    }
+
+  private var searchJob: Job? = null
+
   init {
     refreshLocalStorageLabel()
+    // Auto-enqueue incremental photo indexing whenever the on-device model is ready and photos are pending
+    if (appContext != null && modelManager != null) {
+      viewModelScope.launch {
+        combine(modelState, indexingStats) { state, stats ->
+          state is ModelState.Ready && stats.pendingCount > 0
+        }
+          .distinctUntilChanged()
+          .collect { shouldIndex ->
+            if (shouldIndex) {
+              VisionIndexWorker.enqueue(appContext, currentUserId)
+            }
+          }
+      }
+    }
     // Enforce cold-start app lock immediately once DataStore security preferences resolve
     viewModelScope.launch {
       prefs.securitySettingsFlow.collect { sec ->
@@ -510,9 +562,9 @@ class EvoriaViewModel(
     email: String,
     website: String,
   ) {
-    if (!canEditDeveloperSocials(currentUserEmail)) {
+    if (!canEditAboutPage(currentUserEmail)) {
       _statusBanner.value =
-        "Akses ditolak: hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengatur sosial media developer."
+        "Akses ditolak: hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengubah halaman Tentang."
       return
     }
     viewModelScope.launch {
@@ -524,6 +576,104 @@ class EvoriaViewModel(
         website = website,
       )
       _statusBanner.value = "Tautan sosial media developer tersimpan."
+    }
+  }
+
+  fun updateDeveloperAboutProfile(
+    displayName: String,
+    roleLabel: String,
+    useBackgroundAsPageBackdrop: Boolean,
+  ) {
+    if (!canEditAboutPage(currentUserEmail)) {
+      _statusBanner.value =
+        "Akses ditolak: hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengubah halaman Tentang."
+      return
+    }
+    viewModelScope.launch {
+      prefs.updateDeveloperAboutInfo(
+        displayName = displayName,
+        roleLabel = roleLabel,
+        useBackgroundAsPageBackdrop = useBackgroundAsPageBackdrop,
+      )
+      _statusBanner.value = "Tampilan halaman Tentang berhasil diperbarui."
+    }
+  }
+
+  fun saveDeveloperBackground(uri: Uri?) {
+    if (uri == null) return
+    if (!canEditAboutPage(currentUserEmail)) {
+      _statusBanner.value =
+        "Akses ditolak: hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengubah background halaman Tentang."
+      return
+    }
+    viewModelScope.launch {
+      val oldUri = userPrefs.value.devBackgroundUri
+      val persisted = localRepo.persistMediaUri(uri).getOrNull()
+      if (persisted == null || (persisted.mediaType != "photo" && persisted.mediaType != "video")) {
+        _statusBanner.value = "Pilih file foto atau video yang valid untuk background Tentang."
+        return@launch
+      }
+      prefs.setDeveloperBackground(persisted.localFileUri, persisted.mediaType)
+      if (!oldUri.isNullOrBlank() && oldUri != persisted.localFileUri) {
+        withContext(Dispatchers.IO) { MediaStorageHelper.deletePersistedFile(oldUri) }
+      }
+      _statusBanner.value =
+        if (persisted.mediaType == "video") "Background video halaman Tentang diperbarui."
+        else "Background foto halaman Tentang diperbarui."
+    }
+  }
+
+  fun clearDeveloperBackground() {
+    if (!canEditAboutPage(currentUserEmail)) {
+      _statusBanner.value =
+        "Akses ditolak: hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengubah background halaman Tentang."
+      return
+    }
+    viewModelScope.launch {
+      val oldUri = userPrefs.value.devBackgroundUri
+      prefs.clearDeveloperBackground()
+      if (!oldUri.isNullOrBlank()) {
+        withContext(Dispatchers.IO) { MediaStorageHelper.deletePersistedFile(oldUri) }
+      }
+      _statusBanner.value = "Background halaman Tentang dikembalikan ke bawaan."
+    }
+  }
+
+  fun saveDeveloperAvatar(uri: Uri?) {
+    if (uri == null) return
+    if (!canEditAboutPage(currentUserEmail)) {
+      _statusBanner.value =
+        "Akses ditolak: hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengubah foto profil developer."
+      return
+    }
+    viewModelScope.launch {
+      val oldUri = userPrefs.value.devAvatarUri
+      val persisted = localRepo.persistMediaUri(uri).getOrNull()
+      if (persisted == null || persisted.mediaType != "photo") {
+        _statusBanner.value = "Pilih file foto yang valid untuk foto profil developer."
+        return@launch
+      }
+      prefs.setDeveloperAvatar(persisted.localFileUri)
+      if (!oldUri.isNullOrBlank() && oldUri != persisted.localFileUri) {
+        withContext(Dispatchers.IO) { MediaStorageHelper.deletePersistedFile(oldUri) }
+      }
+      _statusBanner.value = "Foto profil developer diperbarui."
+    }
+  }
+
+  fun clearDeveloperAvatar() {
+    if (!canEditAboutPage(currentUserEmail)) {
+      _statusBanner.value =
+        "Akses ditolak: hanya akun Google $DEVELOPER_ADMIN_EMAIL yang dapat mengubah foto profil developer."
+      return
+    }
+    viewModelScope.launch {
+      val oldUri = userPrefs.value.devAvatarUri
+      prefs.clearDeveloperAvatar()
+      if (!oldUri.isNullOrBlank()) {
+        withContext(Dispatchers.IO) { MediaStorageHelper.deletePersistedFile(oldUri) }
+      }
+      _statusBanner.value = "Foto profil developer dikembalikan ke bawaan."
     }
   }
 
@@ -662,13 +812,13 @@ class EvoriaViewModel(
     visibility: String = "private",
   ) {
     val distinctAlbumIds = albumIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-    if (distinctAlbumIds.isEmpty()) {
-      _statusBanner.value = "Pilih minimal satu album untuk digabungkan ke kenangan."
+    val selectedAlbums = localAlbums.value.filter { it.id in distinctAlbumIds }
+    if (distinctAlbumIds.size < 2 || selectedAlbums.size < 2) {
+      _statusBanner.value = "Kenangan hanya dapat dibuat dari gabungan minimal 2 album."
       return
     }
     viewModelScope.launch {
       val now = System.currentTimeMillis()
-      val selectedAlbums = localAlbums.value.filter { it.id in distinctAlbumIds }
       val firstCover =
         selectedAlbums.firstNotNullOfOrNull { it.coverUri }
           ?: localMemories.value.firstOrNull { it.albumId in distinctAlbumIds && !it.mediaUri.isNullOrBlank() }?.mediaUri
@@ -771,6 +921,9 @@ class EvoriaViewModel(
             title = "Kenangan Baru Dibagikan",
             body = "${currentDisplayName()} menambahkan $savedCount kenangan ke ruang bersama.",
           )
+        }
+        if (photoCount > 0 && appContext != null && modelManager?.isReady() == true) {
+          VisionIndexWorker.enqueue(appContext, currentUserId, replaceExisting = false)
         }
         _bloomMessage.value =
           when {
@@ -957,7 +1110,47 @@ class EvoriaViewModel(
     viewModelScope.launch { localRepo.deleteUploadJob(jobId) }
   }
 
-  // --- JELAJAH AI PHOTO SEARCH ---
+  // --- JELAJAH ON-DEVICE AI PHOTO SEARCH ---
+
+  fun downloadVisionModel() {
+    val mm = modelManager ?: return
+    val job =
+      viewModelScope.launch {
+        val res = mm.downloadAndVerifyModels()
+        if (res.isSuccess && appContext != null) {
+          VisionIndexWorker.enqueue(appContext, currentUserId, replaceExisting = true)
+          _statusBanner.value = "Model AI On-Device siap. Mengindeks foto secara lokal..."
+        }
+      }
+    mm.attachDownloadJob(job)
+  }
+
+  fun cancelVisionModelDownload() {
+    modelManager?.cancelDownload()
+    _statusBanner.value = "Unduhan model AI lokal dibatalkan."
+  }
+
+  fun deleteVisionModel() {
+    viewModelScope.launch {
+      embeddingEngine?.releaseAll()
+      modelManager?.deleteModels()
+      _statusBanner.value = "Model AI lokal dihapus dari perangkat."
+    }
+  }
+
+  fun triggerPhotoIndexing() {
+    val ctx = appContext ?: return
+    if (modelManager?.isReady() != true) {
+      _statusBanner.value = "Unduh Model AI On-Device terlebih dahulu sebelum mengindeks foto."
+      return
+    }
+    VisionIndexWorker.enqueue(ctx, currentUserId, replaceExisting = true)
+  }
+
+  fun clearSearchState() {
+    searchJob?.cancel()
+    _searchState.value = SearchUiState.Idle
+  }
 
   fun runSearch(
     query: String,
@@ -965,51 +1158,41 @@ class EvoriaViewModel(
     mediaTypeFilter: String = "all",
     albumFilterId: String? = null,
   ) {
-    viewModelScope.launch {
-      _searchState.value = SearchUiState.Loading
-      if (query.isNotBlank()) prefs.addSearchHistory(query)
-      val filtered =
-        localMemories.value.filter { mem ->
-          val visOk = visibilityFilter == "all" || mem.visibility.equals(visibilityFilter, ignoreCase = true)
-          val type = mem.mediaType.trim().lowercase()
-          val typeOk =
-            when (mediaTypeFilter) {
-              "all" -> true
-              "photo" -> type == "photo" || (!mem.mediaUri.isNullOrBlank() && type != "video" && type != "story")
-              "video" -> type == "video"
-              "story" -> type == "story" || mem.mediaUri.isNullOrBlank()
-              "favorite" -> mem.isFavorite
-              else -> type == mediaTypeFilter
-            }
-          val albOk = albumFilterId == null || mem.albumId == albumFilterId
-          visOk && typeOk && albOk
-        }
-      val albumTitlesById = localAlbums.value.associate { it.id to it.title }
-      val outcome =
-        searchEngine.searchMemories(
-          query = query,
-          candidates = filtered,
-          allowCloudAi = userPrefs.value.aiSearchConsent,
-          albumTitlesById = albumTitlesById,
-        )
-      if (outcome.discoveredTagsByMemoryId.isNotEmpty()) {
-        outcome.discoveredTagsByMemoryId.forEach { (memId, newTags) ->
-          val existingMem = localMemories.value.firstOrNull { it.id == memId }
-          if (existingMem != null) {
-            val currentTags =
-              existingMem.tagsCsv.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toMutableSet()
-            val added = newTags.map { it.trim().lowercase() }.filter { it.isNotEmpty() && currentTags.add(it) }
-            if (added.isNotEmpty()) {
-              localRepo.saveMemoryAndEnqueue(
-                existingMem.copy(tagsCsv = currentTags.take(12).joinToString(", ")),
-                enqueueUploadJob = false,
-              )
-            }
-          }
-        }
-      }
-      _searchState.value = SearchUiState.Success(outcome)
+    searchJob?.cancel()
+    if (query.isBlank() && visibilityFilter == "all" && mediaTypeFilter == "all" && albumFilterId == null) {
+      _searchState.value = SearchUiState.Idle
+      return
     }
+    searchJob =
+      viewModelScope.launch {
+        _searchState.value = SearchUiState.Loading
+        if (query.isNotBlank()) prefs.addSearchHistory(query)
+        val filtered =
+          localMemories.value.filter { mem ->
+            val visOk = visibilityFilter == "all" || mem.visibility.equals(visibilityFilter, ignoreCase = true)
+            val type = mem.mediaType.trim().lowercase()
+            val typeOk =
+              when (mediaTypeFilter) {
+                "all" -> true
+                "photo" -> type == "photo" || (!mem.mediaUri.isNullOrBlank() && type != "video" && type != "story")
+                "video" -> type == "video"
+                "story" -> type == "story" || mem.mediaUri.isNullOrBlank()
+                "favorite" -> mem.isFavorite
+                else -> type == mediaTypeFilter
+              }
+            val albOk = albumFilterId == null || mem.albumId == albumFilterId
+            visOk && typeOk && albOk
+          }
+        val albumTitlesById = localAlbums.value.associate { it.id to it.title }
+        val outcome =
+          searchEngine.searchMemories(
+            query = query,
+            candidates = filtered,
+            allowCloudAi = modelManager?.isReady() == true,
+            albumTitlesById = albumTitlesById,
+          )
+        _searchState.value = SearchUiState.Success(outcome)
+      }
   }
 
   fun clearSearchHistory() {
@@ -1017,13 +1200,6 @@ class EvoriaViewModel(
   }
 
   fun generateAiMemoryStory(photoUri: Uri?, seedTitle: String, location: String) {
-    if (!userPrefs.value.aiSearchConsent) {
-      _aiMemoryDraftState.value =
-        AiMemoryDraftUiState.Error(
-          "Aktifkan persetujuan Gemini AI di tab Jelajah terlebih dahulu untuk merangkai cerita otomatis."
-        )
-      return
-    }
     viewModelScope.launch {
       _aiMemoryDraftState.value = AiMemoryDraftUiState.Loading
       val res =
@@ -1036,7 +1212,7 @@ class EvoriaViewModel(
         res.fold(
           onSuccess = { AiMemoryDraftUiState.Success(it) },
           onFailure = {
-            AiMemoryDraftUiState.Error(it.localizedMessage ?: "Gagal meminta draf cerita dari Gemini AI.")
+            AiMemoryDraftUiState.Error(it.localizedMessage ?: "Gagal merangkai draf cerita.")
           },
         )
     }
@@ -1047,13 +1223,6 @@ class EvoriaViewModel(
   }
 
   fun generateAiReflectionInsight() {
-    if (!userPrefs.value.aiSearchConsent) {
-      _aiReflectionState.value =
-        AiReflectionUiState.Error(
-          "Aktifkan persetujuan Gemini AI di tab Jelajah agar Gemini dapat memberi pertanyaan & wawasan hangat."
-        )
-      return
-    }
     viewModelScope.launch {
       _aiReflectionState.value = AiReflectionUiState.Loading
       val recentMoods =
@@ -1070,7 +1239,7 @@ class EvoriaViewModel(
         res.fold(
           onSuccess = { AiReflectionUiState.Success(it) },
           onFailure = {
-            AiReflectionUiState.Error(it.localizedMessage ?: "Gagal memuat refleksi Gemini AI.")
+            AiReflectionUiState.Error(it.localizedMessage ?: "Gagal memuat refleksi.")
           },
         )
     }
@@ -1985,10 +2154,24 @@ class EvoriaViewModel(
   fun disconnectCouple() {
     val couple = activeCouple.value ?: return
     viewModelScope.launch {
+      _inviteLoading.value = true
+      _inviteActionError.value = null
       val res = cloudRepo.disconnectCouple(couple.id)
-      _statusBanner.value =
-        if (res.isSuccess) "Koneksi pasangan diputuskan."
-        else "Gagal memutus koneksi: ${res.exceptionOrNull()?.localizedMessage}"
+      _inviteLoading.value = false
+      if (res.isSuccess) {
+        _generatedInvitation.value = null
+        _lookedUpInvitation.value = null
+        localRepo.addLocalNotification(
+          kind = "invite",
+          title = "Hubungan dilepaskan",
+          body = "Tautan pasangan telah dilepaskan. Kamu tetap menyimpan seluruh data pribadimu di perangkat.",
+        )
+        _statusBanner.value = "Hubungan pasangan berhasil dilepaskan."
+      } else {
+        val msg = res.exceptionOrNull()?.localizedMessage ?: "Terjadi kesalahan."
+        _inviteActionError.value = "Gagal melepaskan hubungan: $msg"
+        _statusBanner.value = "Gagal melepaskan hubungan: $msg"
+      }
     }
   }
 

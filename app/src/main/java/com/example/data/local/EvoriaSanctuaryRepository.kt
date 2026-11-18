@@ -129,6 +129,24 @@ class EvoriaSanctuaryRepository(
 
   fun observeSyncCheckpoint(): Flow<SyncCheckpointEntity?> = dao.observeSyncCheckpoint()
 
+  fun observePhotoEmbeddings(uid: String): Flow<List<PhotoEmbeddingEntity>> =
+    dao.observePhotoEmbeddings(uid)
+
+  suspend fun getIndexedEmbeddingsForModel(uid: String, modelVersion: String): List<PhotoEmbeddingEntity> =
+    dao.getIndexedEmbeddingsForModel(uid, modelVersion)
+
+  suspend fun getPhotoEmbeddingsSnapshot(uid: String): List<PhotoEmbeddingEntity> =
+    dao.getPhotoEmbeddingsSnapshot(uid)
+
+  suspend fun getMemoriesSnapshot(uid: String): List<LocalMemoryEntity> =
+    dao.getMemoriesSnapshot(uid)
+
+  suspend fun upsertPhotoEmbedding(entity: PhotoEmbeddingEntity) =
+    dao.upsertPhotoEmbedding(entity)
+
+  suspend fun deletePhotoEmbedding(memoryId: String) =
+    dao.deletePhotoEmbedding(memoryId)
+
   suspend fun persistMediaUri(uri: Uri): Result<PersistedMedia> =
     withContext(Dispatchers.IO) {
       MediaStorageHelper.persistUriToAppStorage(context, uri)
@@ -206,6 +224,7 @@ class EvoriaSanctuaryRepository(
     withContext(Dispatchers.IO) {
       MediaStorageHelper.deletePersistedFile(memory.mediaUri)
     }
+    dao.deletePhotoEmbedding(memory.id)
     dao.deleteMemory(memory.id)
   }
 
@@ -491,6 +510,7 @@ class EvoriaSanctuaryRepository(
     dao.clearUserMoods(uid)
     dao.clearUserReflections(uid)
     dao.clearUserCapsules(uid)
+    dao.clearUserPhotoEmbeddings(uid)
     dao.clearAllUploadJobs()
     dao.clearAllLocalNotifications()
   }

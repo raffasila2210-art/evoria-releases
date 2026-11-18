@@ -21,9 +21,13 @@ import kotlinx.coroutines.flow.map
 private val Context.evoriaDataStore: DataStore<Preferences> by preferencesDataStore(name = "evoria_prefs")
 
 const val DEVELOPER_ADMIN_EMAIL = "musyawalraffa@gmail.com"
+const val DEFAULT_DEV_DISPLAY_NAME = "RAFFA AULIA MUSYAWAL"
+const val DEFAULT_DEV_ROLE_LABEL = "Pengembang"
 
 fun canEditDeveloperSocials(email: String?): Boolean =
   email?.trim()?.equals(DEVELOPER_ADMIN_EMAIL, ignoreCase = true) == true
+
+fun canEditAboutPage(email: String?): Boolean = canEditDeveloperSocials(email)
 
 enum class ThemeMode(val labelId: String) {
   SYSTEM("Ikuti Sistem"),
@@ -109,6 +113,12 @@ data class AppUserPrefs(
   val devGithub: String = "",
   val devEmail: String = "",
   val devWebsite: String = "",
+  val devDisplayName: String = DEFAULT_DEV_DISPLAY_NAME,
+  val devRoleLabel: String = DEFAULT_DEV_ROLE_LABEL,
+  val devBackgroundUri: String? = null,
+  val devBackgroundType: String = "",
+  val devUseBackgroundAsPageBackdrop: Boolean = false,
+  val devAvatarUri: String? = null,
   val profileBannerUri: String? = null,
   val profileBannerType: String = "",
 )
@@ -158,6 +168,12 @@ class SecurityPreferences(private val context: Context) {
     val DEV_GITHUB = stringPreferencesKey("dev_github")
     val DEV_EMAIL = stringPreferencesKey("dev_email")
     val DEV_WEBSITE = stringPreferencesKey("dev_website")
+    val DEV_DISPLAY_NAME = stringPreferencesKey("dev_display_name")
+    val DEV_ROLE_LABEL = stringPreferencesKey("dev_role_label")
+    val DEV_BACKGROUND_URI = stringPreferencesKey("dev_background_uri")
+    val DEV_BACKGROUND_TYPE = stringPreferencesKey("dev_background_type")
+    val DEV_USE_BG_AS_PAGE_BACKDROP = booleanPreferencesKey("dev_use_bg_as_page_backdrop")
+    val DEV_AVATAR_URI = stringPreferencesKey("dev_avatar_uri")
     val PROFILE_BANNER_URI = stringPreferencesKey("profile_banner_uri")
     val PROFILE_BANNER_TYPE = stringPreferencesKey("profile_banner_type")
   }
@@ -230,6 +246,12 @@ class SecurityPreferences(private val context: Context) {
         devGithub = prefs[Keys.DEV_GITHUB].orEmpty(),
         devEmail = prefs[Keys.DEV_EMAIL].orEmpty(),
         devWebsite = prefs[Keys.DEV_WEBSITE].orEmpty(),
+        devDisplayName = prefs[Keys.DEV_DISPLAY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_DEV_DISPLAY_NAME,
+        devRoleLabel = prefs[Keys.DEV_ROLE_LABEL]?.takeIf { it.isNotBlank() } ?: DEFAULT_DEV_ROLE_LABEL,
+        devBackgroundUri = prefs[Keys.DEV_BACKGROUND_URI]?.takeIf { it.isNotBlank() },
+        devBackgroundType = prefs[Keys.DEV_BACKGROUND_TYPE].orEmpty(),
+        devUseBackgroundAsPageBackdrop = prefs[Keys.DEV_USE_BG_AS_PAGE_BACKDROP] ?: false,
+        devAvatarUri = prefs[Keys.DEV_AVATAR_URI]?.takeIf { it.isNotBlank() },
         profileBannerUri = prefs[Keys.PROFILE_BANNER_URI]?.takeIf { it.isNotBlank() },
         profileBannerType = prefs[Keys.PROFILE_BANNER_TYPE].orEmpty(),
       )
@@ -293,6 +315,49 @@ class SecurityPreferences(private val context: Context) {
       it[Keys.DEV_GITHUB] = github.trim()
       it[Keys.DEV_EMAIL] = email.trim()
       it[Keys.DEV_WEBSITE] = website.trim()
+    }
+  }
+
+  suspend fun updateDeveloperAboutInfo(
+    displayName: String,
+    roleLabel: String,
+    useBackgroundAsPageBackdrop: Boolean,
+  ) {
+    context.evoriaDataStore.edit {
+      it[Keys.DEV_DISPLAY_NAME] = displayName.trim().ifBlank { DEFAULT_DEV_DISPLAY_NAME }
+      it[Keys.DEV_ROLE_LABEL] = roleLabel.trim().ifBlank { DEFAULT_DEV_ROLE_LABEL }
+      it[Keys.DEV_USE_BG_AS_PAGE_BACKDROP] = useBackgroundAsPageBackdrop
+    }
+  }
+
+  suspend fun setDeveloperBackground(uri: String?, mediaType: String) {
+    context.evoriaDataStore.edit {
+      it[Keys.DEV_BACKGROUND_URI] = uri.orEmpty()
+      it[Keys.DEV_BACKGROUND_TYPE] = if (uri.isNullOrBlank()) "" else mediaType
+    }
+  }
+
+  suspend fun clearDeveloperBackground() {
+    context.evoriaDataStore.edit {
+      it.remove(Keys.DEV_BACKGROUND_URI)
+      it.remove(Keys.DEV_BACKGROUND_TYPE)
+      it[Keys.DEV_USE_BG_AS_PAGE_BACKDROP] = false
+    }
+  }
+
+  suspend fun setDeveloperAvatar(uri: String?) {
+    context.evoriaDataStore.edit {
+      if (uri.isNullOrBlank()) {
+        it.remove(Keys.DEV_AVATAR_URI)
+      } else {
+        it[Keys.DEV_AVATAR_URI] = uri
+      }
+    }
+  }
+
+  suspend fun clearDeveloperAvatar() {
+    context.evoriaDataStore.edit {
+      it.remove(Keys.DEV_AVATAR_URI)
     }
   }
 

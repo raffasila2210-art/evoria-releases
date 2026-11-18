@@ -195,4 +195,26 @@ interface EvoriaDao {
 
   @Query("DELETE FROM local_notifications")
   suspend fun clearAllLocalNotifications()
+
+  // --- Photo Embeddings (EVRIA VISION SEARCH LITE) ---
+  @Query("SELECT * FROM photo_embeddings WHERE ownerUid = :uid")
+  fun observePhotoEmbeddings(uid: String): Flow<List<PhotoEmbeddingEntity>>
+
+  @Query("SELECT * FROM photo_embeddings WHERE ownerUid = :uid AND indexStatus = 'INDEXED' AND modelVersion = :modelVersion")
+  suspend fun getIndexedEmbeddingsForModel(uid: String, modelVersion: String): List<PhotoEmbeddingEntity>
+
+  @Query("SELECT * FROM photo_embeddings WHERE ownerUid = :uid")
+  suspend fun getPhotoEmbeddingsSnapshot(uid: String): List<PhotoEmbeddingEntity>
+
+  @Query("SELECT * FROM photo_embeddings WHERE memoryId = :memoryId LIMIT 1")
+  suspend fun getPhotoEmbeddingByMemoryId(memoryId: String): PhotoEmbeddingEntity?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertPhotoEmbedding(entity: PhotoEmbeddingEntity)
+
+  @Query("DELETE FROM photo_embeddings WHERE memoryId = :memoryId")
+  suspend fun deletePhotoEmbedding(memoryId: String)
+
+  @Query("DELETE FROM photo_embeddings WHERE ownerUid = :uid")
+  suspend fun clearUserPhotoEmbeddings(uid: String)
 }

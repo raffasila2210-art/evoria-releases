@@ -1,7 +1,7 @@
 {
   "firestore": [
     {
-      "database": "ai-studio-android-evoriare-8d3ca6fa-358a-44f6-99e4-d5c0722388e6",
+      "database": "ai-studio-android-evoriare-16ab7f66-a602-4814-85ca-bb64a250d580",
       "rules": "firestore.rules"
     }
   ],
